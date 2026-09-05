@@ -66,6 +66,7 @@ type BrowserSession struct {
 
 type ExamEvent struct {
 	ID               string `json:"id"`
+	SessionID        string `json:"session_id"`
 	AttemptID        string `json:"attempt_id"`
 	BrowserSessionID string `json:"browser_session_id"`
 	Type             string `json:"type"`
@@ -374,9 +375,15 @@ func (s *Service) authorize(token, id string) *Session {
 }
 
 func (s *Service) appendEvent(session *Session, typ, severity, details string) ExamEvent {
-	event := ExamEvent{ID: randomToken(12), AttemptID: session.AttemptID, BrowserSessionID: session.BrowserSessionID,
+	event := ExamEvent{ID: randomToken(12), SessionID: session.ID, AttemptID: session.AttemptID, BrowserSessionID: session.BrowserSessionID,
 		Type: typ, Severity: severity, Details: details, OccurredAt: time.Now().Unix()}
 	s.events[session.ID] = append(s.events[session.ID], event)
+	if s.ExamStore != nil {
+		_ = s.ExamStore.SaveEvent(context.Background(), event)
+	}
+	if s.ExamStore != nil {
+		_ = s.ExamStore.SaveSession(context.Background(), session)
+	}
 	return event
 }
 
@@ -729,6 +736,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "sessions" && r.Method == http.MethodGet {
+		if sessions, err := s.ExamStore.ListSessions(r.Context(), parts[3]); err == nil {
+			s.writeJSON(w, http.StatusOK, sessions)
+			return
+		}
 		s.mu.RLock()
 		result := make([]map[string]any, 0)
 		for _, session := range s.sessions {
@@ -741,6 +752,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "sessions" && parts[4] == "events" && r.Method == http.MethodGet {
+		if events, err := s.ExamStore.ListEvents(r.Context(), parts[3]); err == nil {
+			s.writeJSON(w, http.StatusOK, events)
+			return
+		}
 		s.mu.RLock()
 		events := append([]ExamEvent(nil), s.events[parts[3]]...)
 		s.mu.RUnlock()
@@ -774,6 +789,9 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			s.exams[input.ExamID] = &Exam{ID: input.ExamID, Origin: s.ExamOrigin, PolicyVersion: 1}
 		}
 		s.sessions[session.ID] = session
+		if s.ExamStore != nil {
+			_ = s.ExamStore.SaveSession(r.Context(), session)
+		}
 		s.appendEvent(session, "attempt_created", "info", "")
 		s.mu.Unlock()
 		session.CodeVerifier = pkceVerifier()
@@ -851,6 +869,9 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			state := session.State
 			lastSeen := session.LastSeenAt
 			s.mu.Unlock()
+			if s.ExamStore != nil {
+				_ = s.ExamStore.SaveSession(r.Context(), session)
+			}
 			s.writeJSON(w, http.StatusOK, map[string]any{"session_id": session.ID, "state": state, "last_seen_at": lastSeen, "heartbeat_seconds": heartbeat, "max_idle_seconds": maxIdle})
 			return
 		}

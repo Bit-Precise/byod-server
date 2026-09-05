@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -26,6 +27,16 @@ type StoredStudent struct {
 	Subject     string `json:"subject"`
 	DisplayName string `json:"display_name"`
 	Enabled     bool   `json:"enabled"`
+}
+
+type StoredSession struct {
+	ID             string    `json:"id"`
+	ExamID         string    `json:"exam_id"`
+	Subject        string    `json:"subject"`
+	State          string    `json:"state"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+	ViolationCount int       `json:"violation_count"`
 }
 
 func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
@@ -49,6 +60,15 @@ func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore,
 		display_name TEXT NOT NULL DEFAULT '',
 		enabled BOOLEAN NOT NULL DEFAULT true,
 		PRIMARY KEY (exam_id, subject)
+	);
+	CREATE TABLE IF NOT EXISTS byod_sessions (
+		id TEXT PRIMARY KEY, exam_id TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL,
+		violation_count INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS byod_events (
+		id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES byod_sessions(id) ON DELETE CASCADE,
+		type TEXT NOT NULL, severity TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', occurred_at TIMESTAMPTZ NOT NULL
 	)`)
 	if err != nil {
 		_ = db.Close()
@@ -139,4 +159,51 @@ func (s *PostgresStore) Upstream(ctx context.Context, examID string) (*url.URL, 
 		return nil, false, err
 	}
 	return u, true, nil
+}
+
+func (s *PostgresStore) SaveSession(ctx context.Context, session *Session) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_sessions (id, exam_id, subject, state, created_at, last_seen_at, violation_count)
+		VALUES ($1,$2,$3,$4,to_timestamp($5),to_timestamp($6),$7)
+		ON CONFLICT (id) DO UPDATE SET subject=EXCLUDED.subject,state=EXCLUDED.state,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count`, session.ID, session.ExamID, session.Subject, session.State, session.CreatedAt, session.LastSeenAt, session.ViolationCount)
+	return err
+}
+
+func (s *PostgresStore) SaveEvent(ctx context.Context, event ExamEvent) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_events (id, session_id, type, severity, details, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,to_timestamp($6)) ON CONFLICT (id) DO NOTHING`, event.ID, event.SessionID, event.Type, event.Severity, event.Details, event.OccurredAt)
+	return err
+}
+
+func (s *PostgresStore) ListSessions(ctx context.Context, examID string) ([]StoredSession, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, exam_id, subject, state, created_at, last_seen_at, violation_count FROM byod_sessions WHERE exam_id=$1 ORDER BY created_at DESC`, examID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []StoredSession
+	for rows.Next() {
+		var item StoredSession
+		if err := rows.Scan(&item.ID, &item.ExamID, &item.Subject, &item.State, &item.CreatedAt, &item.LastSeenAt, &item.ViolationCount); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresStore) ListEvents(ctx context.Context, sessionID string) ([]ExamEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, type, severity, details, EXTRACT(EPOCH FROM occurred_at)::bigint FROM byod_events WHERE session_id=$1 ORDER BY occurred_at`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ExamEvent
+	for rows.Next() {
+		var item ExamEvent
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Type, &item.Severity, &item.Details, &item.OccurredAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
