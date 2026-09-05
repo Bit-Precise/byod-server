@@ -31,10 +31,6 @@ spec:
             {{- if .Values.devAuth }}
             - --dev-auth
             {{- end }}
-            {{- if .Values.examUpstreams }}
-            - name: BYOD_EXAM_UPSTREAMS
-              value: {{ .Values.examUpstreams | toJson | quote }}
-            {{- end }}
           env:
             - name: BYOD_OIDC_ISSUER
               value: {{ .Values.oidc.issuer | quote }}
@@ -48,6 +44,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.oidc.existingSecret }}
                   key: {{ .Values.oidc.clientSecretKey }}
+            {{- end }}
+            {{- if .Values.examUpstreams }}
+            - name: BYOD_EXAM_UPSTREAMS
+              value: {{ .Values.examUpstreams | toJson | quote }}
             {{- end }}
             {{- if or .Values.policySecret.existingSecret .Values.policySecret.value }}
             - name: BYOD_POLICY_SECRET
