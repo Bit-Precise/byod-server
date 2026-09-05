@@ -1,7 +1,9 @@
 .artifacts/
 
 # Local test/build output
-/byod-middleware
+/byod-server
+/admin-ui/node_modules/
+/admin-ui/dist/
 coverage.out
 
 # Editor and OS metadata

@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,9 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed openapi.yaml
+var openAPISpec []byte
 
 type Session struct {
 	ID               string
@@ -442,6 +446,12 @@ func examIDFromWellKnown(requestPath string) string {
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/openapi.yaml" {
+		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(openAPISpec)
+		return
+	}
 	if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-server", "oidc": s.OIDC != nil || s.DevAuth})
 		return

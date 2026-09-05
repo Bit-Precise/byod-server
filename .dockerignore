@@ -1,2 +1,4 @@
 .git
+admin-ui/node_modules/
+admin-ui/dist/
 *_test.go

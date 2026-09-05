@@ -13,6 +13,23 @@ on:
       - '.github/workflows/release.yml'
 
 jobs:
+  admin-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+      - name: Generate API client and build admin UI
+        working-directory: admin-ui
+        run: |
+          npm ci
+          npm run generate:api
+          git diff --exit-code src/api/generated.ts
+          npm run build
+
   validate:
     runs-on: ubuntu-latest
     steps:
