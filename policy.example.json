@@ -1,0 +1,29 @@
+{
+  "course-101": {
+    "browser": {
+      "allow_background": false,
+      "allow_new_tabs": false,
+      "allow_new_windows": false,
+      "allow_devtools": false,
+      "allow_print": false,
+      "allow_downloads": false,
+      "allow_clipboard_read": false,
+      "allow_clipboard_write": false,
+      "kiosk_mode": true,
+      "exit_requires_unlock": true
+    },
+    "navigation": {
+      "allowed_paths": ["/course-101/**"],
+      "blocked_schemes": ["file", "javascript", "data", "devtools"]
+    },
+    "violations": {
+      "on_background": "suspend",
+      "on_new_tab": "block",
+      "on_devtools": "block"
+    },
+    "session": {
+      "heartbeat_seconds": 15,
+      "max_idle_seconds": 45
+    }
+  }
+}

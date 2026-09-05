@@ -1,0 +1,10 @@
+.artifacts/
+
+# Local test/build output
+byod-middleware
+coverage.out
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
