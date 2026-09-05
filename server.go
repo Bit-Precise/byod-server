@@ -406,6 +406,10 @@ func (s *Service) writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		s.adminAPI(w, r)
+		return
+	}
 	// grips://exam is a trusted Chromium WebUI origin, but it is still
 	// cross-origin from the HTTPS exam endpoint.  Explicit CORS headers are
 	// therefore required for the browser-side session bootstrap.
@@ -447,10 +451,6 @@ func examIDFromWellKnown(requestPath string) string {
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
-		s.adminAPI(w, r)
-		return
-	}
 	if r.URL.Path == "/openapi.yaml" {
 		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -639,6 +639,22 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, exams)
 		return
 	}
+	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodPost {
+		var input struct {
+			ID      string `json:"id"`
+			BaseURL string `json:"base_url"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input) != nil || !validExamID(input.ID) {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
+			return
+		}
+		if err := s.ExamStore.UpsertExam(r.Context(), input.ID, input.BaseURL); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
+			return
+		}
+		s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimRight(input.BaseURL, "/"), "state": "draft"})
+		return
+	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "students" && r.Method == http.MethodGet {
 		students, err := s.ExamStore.ListStudents(r.Context(), parts[3])
@@ -665,6 +681,25 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "sessions" && r.Method == http.MethodGet {
+		s.mu.RLock()
+		result := make([]map[string]any, 0)
+		for _, session := range s.sessions {
+			if session.ExamID == parts[3] {
+				result = append(result, map[string]any{"id": session.ID, "exam_id": session.ExamID, "subject": session.Subject, "state": session.State, "created_at": time.Unix(session.CreatedAt, 0).UTC(), "last_seen_at": time.Unix(session.LastSeenAt, 0).UTC(), "violation_count": session.ViolationCount})
+			}
+		}
+		s.mu.RUnlock()
+		s.writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "sessions" && parts[4] == "events" && r.Method == http.MethodGet {
+		s.mu.RLock()
+		events := append([]ExamEvent(nil), s.events[parts[3]]...)
+		s.mu.RUnlock()
+		s.writeJSON(w, http.StatusOK, events)
 		return
 	}
 	s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
