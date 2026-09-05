@@ -120,6 +120,11 @@ func (s *PostgresStore) UpsertExam(ctx context.Context, examID, baseURL string) 
 	return err
 }
 
+func (s *PostgresStore) DeleteExam(ctx context.Context, examID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM byod_exams WHERE exam_id=$1`, examID)
+	return err
+}
+
 func (s *PostgresStore) Upstream(ctx context.Context, examID string) (*url.URL, bool, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT base_url FROM byod_exams WHERE exam_id=$1`, examID).Scan(&raw)

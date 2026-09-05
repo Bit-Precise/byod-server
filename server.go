@@ -656,6 +656,51 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 4 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" {
+		exams, err := s.ExamStore.ListExams(r.Context())
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			return
+		}
+		var found *StoredExam
+		for i := range exams {
+			if exams[i].ID == parts[3] {
+				found = &exams[i]
+				break
+			}
+		}
+		if r.Method == http.MethodGet {
+			if found == nil {
+				s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "exam_not_found"})
+			} else {
+				s.writeJSON(w, http.StatusOK, found)
+			}
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := s.ExamStore.DeleteExam(r.Context(), parts[3]); err != nil {
+				s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			var input struct {
+				BaseURL string `json:"base_url"`
+			}
+			if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input) != nil || input.BaseURL == "" {
+				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
+				return
+			}
+			if err := s.ExamStore.UpsertExam(r.Context(), parts[3], input.BaseURL); err != nil {
+				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
+				return
+			}
+			s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimRight(input.BaseURL, "/"), "state": "draft"})
+			return
+		}
+	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "students" && r.Method == http.MethodGet {
 		students, err := s.ExamStore.ListStudents(r.Context(), parts[3])
 		if err != nil {
