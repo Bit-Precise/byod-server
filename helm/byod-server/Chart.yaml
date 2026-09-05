@@ -1,5 +1,5 @@
 apiVersion: v2
-name: byod-middleware
+name: byod-server
 description: BYOD exam browser middleware
 type: application
 version: 0.1.0

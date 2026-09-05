@@ -5,7 +5,7 @@
 ## 启动
 
 ```bash
-go run ./cmd/byod-middleware --listen 127.0.0.1:8787 \
+go run ./cmd/byod-server --listen 127.0.0.1:8787 \
   --exam-origin https://exam.cs.ac.cn \
   --upstream http://127.0.0.1:9000
 ```
@@ -14,7 +14,7 @@ go run ./cmd/byod-middleware --listen 127.0.0.1:8787 \
 `oidc:dev-student-42`，不要用于生产）：
 
 ```bash
-go run ./cmd/byod-middleware --dev-auth --listen 127.0.0.1:8787 \
+go run ./cmd/byod-server --dev-auth --listen 127.0.0.1:8787 \
   --exam-origin https://exam.cs.ac.cn --upstream http://127.0.0.1:9000
 ```
 
@@ -23,6 +23,16 @@ go run ./cmd/byod-middleware --dev-auth --listen 127.0.0.1:8787 \
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
+源站默认使用 `--upstream`，也可以按考试 ID 配置不同源站：
+
+```bash
+BYOD_EXAM_UPSTREAMS='{"course-101":"https://cs101.gbu.edu.cn"}' \\
+  go run ./cmd/byod-server --upstream http://exam-upstream:9000
+```
+
+映射中的 URL 只能是运维预先配置的绝对 HTTP(S) 地址，不能由浏览器请求传入；
+未匹配的考试继续使用 `--upstream`。
+
 每场考试的策略可以通过 `--policy-file` 或 `BYOD_POLICY_FILE` 覆盖，格式参考
 [`policy.example.json`](policy.example.json)。中台会强制覆盖 `exam_id` 和
 `allowed_origins`，并对最终文档重新签名。
@@ -30,9 +40,9 @@ go run ./cmd/byod-middleware --dev-auth --listen 127.0.0.1:8787 \
 ## Helm 部署
 
 ```bash
-helm lint helm/byod-middleware
-helm upgrade --install byod helm/byod-middleware \
-  --set image.repository=registry.example.com/byod-middleware \
+helm lint helm/byod-server
+helm upgrade --install byod helm/byod-server \
+  --set image.repository=registry.example.com/byod-server \
   --set image.tag=0.1.0 \
   --set examOrigin=https://exam.cs.ac.cn \
   --set upstream=http://exam-upstream:9000 \
@@ -50,7 +60,7 @@ helm upgrade --install byod helm/byod-middleware \
 
 ```text
 ghcr.io/bit-precise/byod-server:<tag>
-oci://ghcr.io/bit-precise/charts/byod-middleware:<chart-version>
+oci://ghcr.io/bit-precise/charts/byod-server:<chart-version>
 ```
 
 工作流使用 `GITHUB_TOKEN` 和 `packages: write` 权限。`v0.1.0` 会发布版本

@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	middleware "byod-middleware"
+	server "byod-server"
 )
 
 func main() {
@@ -33,12 +33,12 @@ func main() {
 	if len(secret) == 0 {
 		secret = []byte("development-only-secret")
 	}
-	service, err := middleware.NewService(*origin, *upstream, secret)
+	service, err := server.NewService(*origin, *upstream, secret)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if *examUpstreams != "" {
-		configured, parseErr := middleware.ParseExamUpstreams([]byte(*examUpstreams))
+		configured, parseErr := server.ParseExamUpstreams([]byte(*examUpstreams))
 		if parseErr != nil {
 			log.Fatal(parseErr)
 		}
@@ -50,14 +50,14 @@ func main() {
 		if readErr != nil {
 			log.Fatal(readErr)
 		}
-		overrides, parseErr := middleware.ParsePolicyOverrides(data)
+		overrides, parseErr := server.ParsePolicyOverrides(data)
 		if parseErr != nil {
 			log.Fatal(parseErr)
 		}
 		service.PolicyOverrides = overrides
 	}
 	if *oidcIssuer != "" {
-		authenticator, authErr := middleware.NewOIDCAuthenticator(context.Background(), *oidcIssuer, *oidcClientID, *oidcClientSecret, *oidcRedirect)
+		authenticator, authErr := server.NewOIDCAuthenticator(context.Background(), *oidcIssuer, *oidcClientID, *oidcClientSecret, *oidcRedirect)
 		if authErr != nil {
 			log.Fatal(authErr)
 		}
@@ -73,7 +73,7 @@ func main() {
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	}()
-	log.Printf("BYOD middleware listening on http://%s", *listen)
+	log.Printf("BYOD server listening on http://%s", *listen)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "byod-middleware.fullname" . }}
+  name: {{ include "byod-server.fullname" . }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:
@@ -16,7 +16,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "byod-middleware.fullname" . }}
+                name: {{ include "byod-server.fullname" . }}
                 port:
                   name: http
 {{- end }}

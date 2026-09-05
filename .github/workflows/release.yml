@@ -1,4 +1,4 @@
-name: BYOD middleware
+name: BYOD server
 
 on:
   push:
@@ -27,7 +27,7 @@ jobs:
           go test ./...
           go vet ./...
       - name: Lint chart
-        run: helm lint helm/byod-middleware
+        run: helm lint helm/byod-server
 
   publish:
     if: github.event_name == 'push'
@@ -84,9 +84,9 @@ jobs:
             --username "$GITHUB_ACTOR" \
             --password-stdin <<< "$GITHUB_TOKEN"
           mkdir -p .artifacts
-          helm package helm/byod-middleware \
+          helm package helm/byod-server \
             --version "$HELM_VERSION" \
             --app-version "$HELM_VERSION" \
             --destination .artifacts
-          helm push .artifacts/byod-middleware-${HELM_VERSION}.tgz \
+          helm push .artifacts/byod-server-${HELM_VERSION}.tgz \
             "${{ steps.meta.outputs.chart_repository }}"

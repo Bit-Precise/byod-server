@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -76,6 +77,7 @@ type Service struct {
 	// map is operator-provided configuration, never taken from a browser
 	// request, so exam routing cannot be turned into an open proxy.
 	ExamUpstreams   map[string]*url.URL
+	ExamStore       *PostgresStore
 	PolicySecret    []byte
 	OIDCAuthorize   string
 	OIDC            *OIDCAuthenticator
@@ -85,6 +87,20 @@ type Service struct {
 	sessions        map[string]*Session
 	exams           map[string]*Exam
 	events          map[string][]ExamEvent
+}
+
+func (s *Service) upstreamForExam(ctx context.Context, examID string) (*url.URL, error) {
+	if s.ExamStore != nil {
+		if upstream, ok, err := s.ExamStore.Upstream(ctx, examID); err != nil {
+			return nil, err
+		} else if ok {
+			return upstream, nil
+		}
+	}
+	if configured, ok := s.ExamUpstreams[examID]; ok {
+		return configured, nil
+	}
+	return s.Upstream, nil
 }
 
 func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
@@ -427,7 +443,7 @@ func examIDFromWellKnown(requestPath string) string {
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
-		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-middleware", "oidc": s.OIDC != nil || s.DevAuth})
+		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-server", "oidc": s.OIDC != nil || s.DevAuth})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/.well-known/byod-configuration") {
@@ -749,9 +765,10 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	session.LastSeenAt = time.Now().Unix()
 	s.mu.Unlock()
-	upstream := s.Upstream
-	if configured, ok := s.ExamUpstreams[examID]; ok {
-		upstream = configured
+	upstream, upstreamErr := s.upstreamForExam(r.Context(), examID)
+	if upstreamErr != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": "exam_configuration_unavailable"})
+		return
 	}
 	target := *upstream
 	cleanResource := strings.TrimPrefix(requestPath, "/"+examID)

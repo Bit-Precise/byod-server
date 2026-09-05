@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "byod-middleware.fullname" . }}
+  name: {{ include "byod-server.fullname" . }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: {{ include "byod-middleware.fullname" . }}
+      app: {{ include "byod-server.fullname" . }}
   template:
     metadata:
       labels:
-        app: {{ include "byod-middleware.fullname" . }}
+        app: {{ include "byod-server.fullname" . }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -74,4 +74,4 @@ spec:
       volumes:
         - name: policy
           configMap:
-            name: {{ include "byod-middleware.fullname" . }}-policy
+            name: {{ include "byod-server.fullname" . }}-policy

@@ -2,10 +2,10 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "byod-middleware.fullname" . }}
+  name: {{ include "byod-server.fullname" . }}
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: {{ include "byod-middleware.fullname" . }}
+      app: {{ include "byod-server.fullname" . }}
 {{- end }}
