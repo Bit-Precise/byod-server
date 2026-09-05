@@ -1,0 +1,4 @@
+BYOD middleware is deployed as {{ include "byod-middleware.fullname" . }}.
+Configure a TLS reverse proxy for the exam origin before enabling production OIDC.
+Set policySecret.existingSecret (or policySecret.value for local development)
+and oidc.existingSecret before starting a production release.

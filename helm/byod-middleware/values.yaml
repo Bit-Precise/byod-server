@@ -1,0 +1,32 @@
+# Sessions/events are currently process-local. Set to 1 until a shared store
+# (Redis/PostgreSQL) is configured.
+replicaCount: 1
+image:
+  repository: ghcr.io/example/byod-middleware
+  tag: latest
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 8787
+examOrigin: https://exam.cs.ac.cn
+upstream: http://exam-upstream:9000
+devAuth: false
+policyFile: /etc/byod/policy/policy.json
+policyJson: '{}'
+oidc:
+  issuer: ""
+  clientId: ""
+  redirectUrl: https://exam.cs.ac.cn/oidc/callback
+  existingSecret: ""
+  clientSecretKey: client-secret
+policySecret:
+  existingSecret: ""
+  key: policy-secret
+  # Required for production. Set this only for local development.
+  value: ""
+ingress:
+  enabled: false
+  className: nginx
+  host: exam.cs.ac.cn
+  tlsSecret: byod-exam-tls
+resources: {}
