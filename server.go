@@ -70,8 +70,12 @@ type ExamEvent struct {
 }
 
 type Service struct {
-	ExamOrigin      string
-	Upstream        *url.URL
+	ExamOrigin string
+	Upstream   *url.URL
+	// ExamUpstreams optionally overrides the default upstream per exam ID. The
+	// map is operator-provided configuration, never taken from a browser
+	// request, so exam routing cannot be turned into an open proxy.
+	ExamUpstreams   map[string]*url.URL
 	PolicySecret    []byte
 	OIDCAuthorize   string
 	OIDC            *OIDCAuthenticator
@@ -93,8 +97,32 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 		return nil, errors.New("upstream must be an absolute HTTP(S) URL")
 	}
 	return &Service{ExamOrigin: strings.TrimRight(examOrigin, "/"), Upstream: base,
-		PolicySecret: secret, OIDCAuthorize: "https://idp.example/authorize",
+		ExamUpstreams: make(map[string]*url.URL),
+		PolicySecret:  secret, OIDCAuthorize: "https://idp.example/authorize",
 		sessions: make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent)}, nil
+}
+
+// ParseExamUpstreams parses an operator-supplied JSON object mapping exam IDs
+// to absolute HTTP(S) base URLs, for example:
+// {"course-101":"https://cs101.gbu.edu.cn"}.
+func ParseExamUpstreams(data []byte) (map[string]*url.URL, error) {
+	var configured map[string]string
+	if err := json.Unmarshal(data, &configured); err != nil {
+		return nil, err
+	}
+	result := make(map[string]*url.URL, len(configured))
+	for examID, rawURL := range configured {
+		if !validExamID(examID) {
+			return nil, fmt.Errorf("invalid exam upstream id %q", examID)
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+			return nil, fmt.Errorf("exam upstream for %q must be an absolute HTTP(S) URL without credentials or fragment", examID)
+		}
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+		result[examID] = parsed
+	}
+	return result, nil
 }
 
 func canonicalJSON(v any) []byte { b, _ := json.Marshal(v); return b }
@@ -721,9 +749,13 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	session.LastSeenAt = time.Now().Unix()
 	s.mu.Unlock()
-	target := *s.Upstream
+	upstream := s.Upstream
+	if configured, ok := s.ExamUpstreams[examID]; ok {
+		upstream = configured
+	}
+	target := *upstream
 	cleanResource := strings.TrimPrefix(requestPath, "/"+examID)
-	target.Path = strings.TrimRight(s.Upstream.Path, "/") + cleanResource
+	target.Path = strings.TrimRight(upstream.Path, "/") + cleanResource
 	target.RawQuery = r.URL.RawQuery
 	request, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), http.MaxBytesReader(w, r.Body, 8<<20))
 	if err != nil {

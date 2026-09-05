@@ -31,6 +31,10 @@ spec:
             {{- if .Values.devAuth }}
             - --dev-auth
             {{- end }}
+            {{- if .Values.examUpstreams }}
+            - name: BYOD_EXAM_UPSTREAMS
+              value: {{ .Values.examUpstreams | toJson | quote }}
+            {{- end }}
           env:
             - name: BYOD_OIDC_ISSUER
               value: {{ .Values.oidc.issuer | quote }}

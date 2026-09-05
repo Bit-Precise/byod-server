@@ -17,6 +17,10 @@
         "port": {"type": "integer", "minimum": 1, "maximum": 65535}
       }
     },
+    "examUpstreams": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^https?://"}
+    },
     "ingress": {
       "type": "object",
       "properties": {"enabled": {"type": "boolean"}}

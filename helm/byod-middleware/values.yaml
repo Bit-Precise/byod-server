@@ -10,6 +10,9 @@ service:
   port: 8787
 examOrigin: https://exam.cs.ac.cn
 upstream: http://exam-upstream:9000
+# Optional per-exam upstream base URLs. Keys are exam IDs, values are absolute
+# HTTP(S) URLs, for example {course-101: https://cs101.gbu.edu.cn}.
+examUpstreams: {}
 devAuth: false
 policyFile: /etc/byod/policy/policy.json
 policyJson: '{}'

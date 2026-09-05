@@ -17,6 +17,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "listen address")
 	origin := flag.String("exam-origin", "https://exam.cs.ac.cn", "public exam origin")
 	upstream := flag.String("upstream", "http://127.0.0.1:9000", "fixed exam upstream")
+	examUpstreams := flag.String("exam-upstreams", os.Getenv("BYOD_EXAM_UPSTREAMS"), "JSON map of exam IDs to upstream base URLs")
 	oidcIssuer := flag.String("oidc-issuer", os.Getenv("BYOD_OIDC_ISSUER"), "OIDC issuer URL")
 	oidcClientID := flag.String("oidc-client-id", os.Getenv("BYOD_OIDC_CLIENT_ID"), "OIDC client ID")
 	oidcClientSecret := flag.String("oidc-client-secret", os.Getenv("BYOD_OIDC_CLIENT_SECRET"), "OIDC client secret")
@@ -35,6 +36,13 @@ func main() {
 	service, err := middleware.NewService(*origin, *upstream, secret)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *examUpstreams != "" {
+		configured, parseErr := middleware.ParseExamUpstreams([]byte(*examUpstreams))
+		if parseErr != nil {
+			log.Fatal(parseErr)
+		}
+		service.ExamUpstreams = configured
 	}
 	service.DevAuth = *devAuth
 	if *policyFile != "" {

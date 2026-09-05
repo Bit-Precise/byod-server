@@ -367,6 +367,38 @@ func TestProxyServesExamRootAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestExamUpstreamOverride(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	configured, err := ParseExamUpstreams([]byte(`{"course-101":"` + upstream.URL + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.ExamUpstreams = configured
+	session := activateTestSession(t, service, "course-101")
+	request := httptest.NewRequest(http.MethodGet, "/course-101/index.html", nil)
+	request.Header.Set("Authorization", "Bearer "+session["browser_token"])
+	response := httptest.NewRecorder()
+	service.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || len(paths) != 1 || paths[0] != "/index.html" {
+		t.Fatalf("exam-specific upstream was not used: status=%d paths=%v", response.Code, paths)
+	}
+}
+
+func TestParseExamUpstreamsRejectsUnsafeURL(t *testing.T) {
+	if _, err := ParseExamUpstreams([]byte(`{"course-101":"file:///etc/passwd"}`)); err == nil {
+		t.Fatal("expected non-HTTP upstream to be rejected")
+	}
+	if _, err := ParseExamUpstreams([]byte(`{"../course":"https://example.test"}`)); err == nil {
+		t.Fatal("expected unsafe exam ID to be rejected")
+	}
+}
+
 func TestProxyHeadersRedirectAndIdentityIsolation(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/redirect" {
