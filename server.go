@@ -86,6 +86,7 @@ type Service struct {
 	OIDCAuthorize   string
 	OIDC            *OIDCAuthenticator
 	DevAuth         bool
+	AdminToken      string
 	PolicyOverrides map[string]map[string]any
 	mu              sync.RWMutex
 	sessions        map[string]*Session
@@ -446,6 +447,10 @@ func examIDFromWellKnown(requestPath string) string {
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		s.adminAPI(w, r)
+		return
+	}
 	if r.URL.Path == "/openapi.yaml" {
 		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -611,6 +616,55 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) >= 1 && validExamID(parts[0]) && !strings.HasPrefix(r.URL.Path, "/v1/") && !strings.HasPrefix(r.URL.Path, "/oidc/") {
 		s.proxy(w, r)
+		return
+	}
+	s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+}
+
+func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
+	if s.AdminToken == "" || r.Header.Get("X-Admin-Token") != s.AdminToken {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin_auth_required"})
+		return
+	}
+	if s.ExamStore == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "database_required"})
+		return
+	}
+	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodGet {
+		exams, err := s.ExamStore.ListExams(r.Context())
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, exams)
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "students" && r.Method == http.MethodGet {
+		students, err := s.ExamStore.ListStudents(r.Context(), parts[3])
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, students)
+		return
+	}
+	if len(parts) == 6 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "students" {
+		var err error
+		switch r.Method {
+		case http.MethodPut:
+			err = s.ExamStore.SetStudent(r.Context(), parts[3], parts[5], true)
+		case http.MethodDelete:
+			err = s.ExamStore.RemoveStudent(r.Context(), parts[3], parts[5])
+		default:
+			s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+			return
+		}
+		if err != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_student"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})

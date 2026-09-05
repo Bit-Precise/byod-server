@@ -15,6 +15,19 @@ import (
 // URLs live in the byod_exams table.
 type PostgresStore struct{ db *sql.DB }
 
+type StoredExam struct {
+	ID        string `json:"id"`
+	BaseURL   string `json:"base_url"`
+	State     string `json:"state"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type StoredStudent struct {
+	Subject     string `json:"subject"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+}
+
 func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
@@ -29,12 +42,67 @@ func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore,
 		base_url TEXT NOT NULL,
 		policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	);
+	CREATE TABLE IF NOT EXISTS byod_exam_students (
+		exam_id TEXT NOT NULL REFERENCES byod_exams(exam_id) ON DELETE CASCADE,
+		subject TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		PRIMARY KEY (exam_id, subject)
 	)`)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return &PostgresStore{db: db}, nil
+}
+
+func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT exam_id, base_url, 'draft', updated_at::text FROM byod_exams ORDER BY exam_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var exams []StoredExam
+	for rows.Next() {
+		var exam StoredExam
+		if err := rows.Scan(&exam.ID, &exam.BaseURL, &exam.State, &exam.UpdatedAt); err != nil {
+			return nil, err
+		}
+		exams = append(exams, exam)
+	}
+	return exams, rows.Err()
+}
+
+func (s *PostgresStore) ListStudents(ctx context.Context, examID string) ([]StoredStudent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT subject, display_name, enabled FROM byod_exam_students WHERE exam_id=$1 ORDER BY subject`, examID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var students []StoredStudent
+	for rows.Next() {
+		var student StoredStudent
+		if err := rows.Scan(&student.Subject, &student.DisplayName, &student.Enabled); err != nil {
+			return nil, err
+		}
+		students = append(students, student)
+	}
+	return students, rows.Err()
+}
+
+func (s *PostgresStore) SetStudent(ctx context.Context, examID, subject string, enabled bool) error {
+	if !validExamID(examID) || subject == "" || len(subject) > 256 {
+		return errors.New("invalid student")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_exam_students (exam_id, subject, enabled) VALUES ($1,$2,$3)
+		ON CONFLICT (exam_id, subject) DO UPDATE SET enabled=EXCLUDED.enabled`, examID, subject, enabled)
+	return err
+}
+
+func (s *PostgresStore) RemoveStudent(ctx context.Context, examID, subject string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM byod_exam_students WHERE exam_id=$1 AND subject=$2`, examID, subject)
+	return err
 }
 
 func (s *PostgresStore) Close() error { return s.db.Close() }

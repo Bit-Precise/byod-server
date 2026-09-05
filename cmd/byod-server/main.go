@@ -17,6 +17,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "listen address")
 	origin := flag.String("exam-origin", "https://exam.cs.ac.cn", "public exam origin")
 	upstream := flag.String("upstream", "http://127.0.0.1:9000", "fixed exam upstream")
+	databaseURL := flag.String("database-url", os.Getenv("BYOD_DATABASE_URL"), "PostgreSQL connection URL for exam metadata")
+	adminToken := flag.String("admin-token", os.Getenv("BYOD_ADMIN_TOKEN"), "administrator API token")
 	examUpstreams := flag.String("exam-upstreams", os.Getenv("BYOD_EXAM_UPSTREAMS"), "JSON map of exam IDs to upstream base URLs")
 	oidcIssuer := flag.String("oidc-issuer", os.Getenv("BYOD_OIDC_ISSUER"), "OIDC issuer URL")
 	oidcClientID := flag.String("oidc-client-id", os.Getenv("BYOD_OIDC_CLIENT_ID"), "OIDC client ID")
@@ -45,6 +47,15 @@ func main() {
 		service.ExamUpstreams = configured
 	}
 	service.DevAuth = *devAuth
+	service.AdminToken = *adminToken
+	if *databaseURL != "" {
+		store, storeErr := server.OpenPostgresStore(context.Background(), *databaseURL)
+		if storeErr != nil {
+			log.Fatal(storeErr)
+		}
+		service.ExamStore = store
+		defer store.Close()
+	}
 	if *policyFile != "" {
 		data, readErr := os.ReadFile(*policyFile)
 		if readErr != nil {
