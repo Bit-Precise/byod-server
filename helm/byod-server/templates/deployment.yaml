@@ -45,6 +45,20 @@ spec:
                   name: {{ .Values.oidc.existingSecret }}
                   key: {{ .Values.oidc.clientSecretKey }}
             {{- end }}
+            {{- if .Values.database.existingSecret }}
+            - name: BYOD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            {{- end }}
+            {{- if .Values.admin.existingSecret }}
+            - name: BYOD_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.admin.existingSecret }}
+                  key: {{ .Values.admin.tokenKey }}
+            {{- end }}
             {{- if .Values.examUpstreams }}
             - name: BYOD_EXAM_UPSTREAMS
               value: {{ .Values.examUpstreams | toJson | quote }}
