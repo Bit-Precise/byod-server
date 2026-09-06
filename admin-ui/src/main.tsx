@@ -1533,6 +1533,7 @@ function ExamDialog({
   }, [exam, open]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (saving) return;
     setFormError("");
     let policyValue: Record<string, unknown>;
     try {
@@ -1545,6 +1546,19 @@ function ExamDialog({
       setFormError("考试 ID 和源站 URL 不能为空。");
       return;
     }
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(id.trim())) {
+      setFormError("考试 ID 只能包含字母、数字、点、下划线和连字符。");
+      return;
+    }
+    try {
+      const parsed = new URL(baseURL.trim());
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("unsupported protocol");
+      }
+    } catch {
+      setFormError("源站 URL 必须是合法的 http(s) 地址，例如 https://cs101.gbu.edu.cn。");
+      return;
+    }
     setSaving(true);
     const body = {
       id: id.trim(),
@@ -1554,20 +1568,30 @@ function ExamDialog({
       ends_at: ends ? new Date(ends).toISOString() : null,
       policy: policyValue,
     };
-    const result = exam
-      ? await api.PATCH("/admin/api/exams/{examId}", {
-          params: { path: { examId: exam.id } },
-          body,
-        })
-      : await api.POST("/admin/api/exams", { body });
-    setSaving(false);
-    if (result.error) {
-      setFormError("保存失败，请检查 ID、URL 和服务日志。");
-      toast.add({ title: "保存考试失败", type: "error" });
-      return;
+    try {
+      const result = exam
+        ? await api.PATCH("/admin/api/exams/{examId}", {
+            params: { path: { examId: exam.id } },
+            body,
+          })
+        : await api.POST("/admin/api/exams", { body });
+      if (result.error) {
+        setFormError("保存失败，请检查考试 ID、源站 URL 和管理员权限。");
+        toast.add({ title: "保存考试失败", type: "error" });
+        return;
+      }
+      toast.add({
+        title: exam ? "考试已更新" : "考试已创建",
+        description: id.trim(),
+        type: "success",
+      });
+      onSaved();
+    } catch {
+      setFormError("无法连接 BYOD Server，请检查网络和服务状态。");
+      toast.add({ title: "保存考试失败", description: "网络请求未完成。", type: "error" });
+    } finally {
+      setSaving(false);
     }
-    toast.add({ title: exam ? "考试已更新" : "考试已创建", description: id.trim(), type: "success" });
-    onSaved();
   };
   return (
     <AppDialog
@@ -1576,7 +1600,11 @@ function ExamDialog({
       title={exam ? "编辑考试" : "新建考试"}
       description="配置考试源站、开放时间和浏览器策略"
     >
-      <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+      <form
+        className="space-y-4"
+        noValidate
+        onSubmit={(event) => void submit(event)}
+      >
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="exam-id">考试 ID</Label>
