@@ -1268,7 +1268,13 @@ function StudentRow({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={() => void remove()}>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => {
+              void remove();
+              setConfirmOpen(false);
+            }}
+          >
             移除学生
           </AlertDialogAction>
         </AlertDialogFooter>
