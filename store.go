@@ -55,6 +55,21 @@ func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore,
 		_ = db.Close()
 		return nil, err
 	}
+	return &PostgresStore{db: db}, nil
+}
+
+// MigratePostgres applies the schema required by the BYOD server. Migrations
+// run from the Helm init container so the application never mutates the schema
+// while it is serving requests.
+func MigratePostgres(ctx context.Context, databaseURL string) error {
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err = db.PingContext(ctx); err != nil {
+		return err
+	}
 	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS byod_schema_migrations(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS byod_exams(exam_id TEXT PRIMARY KEY,base_url TEXT NOT NULL,policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,state TEXT NOT NULL DEFAULT 'draft',starts_at TIMESTAMPTZ,ends_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS byod_exam_students(exam_id TEXT NOT NULL REFERENCES byod_exams(exam_id) ON DELETE CASCADE,subject TEXT NOT NULL,display_name TEXT NOT NULL DEFAULT '',enabled BOOLEAN NOT NULL DEFAULT true,PRIMARY KEY(exam_id,subject));
@@ -65,11 +80,7 @@ CREATE INDEX IF NOT EXISTS byod_sessions_exam_created_idx ON byod_sessions(exam_
 CREATE INDEX IF NOT EXISTS byod_events_session_occurred_idx ON byod_events(session_id,occurred_at);
 CREATE INDEX IF NOT EXISTS byod_tunnel_tickets_session_idx ON byod_tunnel_tickets(session_id,expires_at);
 ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'draft';ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;`)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return &PostgresStore{db: db}, nil
+	return err
 }
 func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT exam_id,base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams ORDER BY exam_id`)

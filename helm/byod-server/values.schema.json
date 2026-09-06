@@ -36,6 +36,27 @@
     "ingress": {
       "type": "object",
       "properties": {"enabled": {"type": "boolean"}}
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "urlKey": {"type": "string"}
+      }
+    },
+    "migration": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {"type": "string"},
+            "tag": {"type": "string"}
+          }
+        },
+        "extraArgs": {"type": "array", "items": {"type": "string"}}
+      }
     }
   }
 }

@@ -30,6 +30,10 @@ oidc:
 database:
   existingSecret: ""
   urlKey: database-url
+migration:
+  enabled: true
+  image: {}
+  extraArgs: []
 admin:
   existingSecret: ""
   tokenKey: admin-token

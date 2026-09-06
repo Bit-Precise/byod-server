@@ -28,7 +28,19 @@ func main() {
 	oidcRedirect := flag.String("oidc-redirect-url", os.Getenv("BYOD_OIDC_REDIRECT_URL"), "OIDC callback URL")
 	devAuth := flag.Bool("dev-auth", false, "enable development callback adapter")
 	policyFile := flag.String("policy-file", os.Getenv("BYOD_POLICY_FILE"), "JSON policy document or exam-id map")
+	migrate := flag.Bool("migrate", false, "apply PostgreSQL schema migrations and exit")
 	flag.Parse()
+	if *migrate {
+		if *databaseURL == "" {
+			log.Fatal("--migrate requires BYOD_DATABASE_URL or --database-url")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := server.MigratePostgres(ctx, *databaseURL); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	secretValue := os.Getenv("BYOD_POLICY_SECRET")
 	if secretValue == "" && !*devAuth {
 		log.Fatal("BYOD_POLICY_SECRET is required unless --dev-auth is enabled")

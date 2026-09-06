@@ -50,7 +50,7 @@ helm upgrade --install byod helm/byod-server \
 后台提供考试、源站、策略、学生名单、session 和审计日志管理。
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
-策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。管理后台位于 `/admin/`，前端 API 客户端由 `openapi.yaml` 自动生成。
+策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，前端 API 客户端由 `openapi.yaml` 自动生成。
 `tunnel.endpoint` 必须指向可直通 Pod 8788 的 TCP 地址；`tunnel.service` 仅创建
 LoadBalancer/NodePort，不做 TLS termination。若集群使用 Gateway API，请关闭该
 Service 并用 TCPRoute 暴露同一个 targetPort。
