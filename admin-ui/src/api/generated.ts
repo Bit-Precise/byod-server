@@ -604,7 +604,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Short-lived tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use) */
+            /** @description Exam-window tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use; revoked when the session is suspended or ended) */
             201: {
                 headers: {
                     [name: string]: unknown;

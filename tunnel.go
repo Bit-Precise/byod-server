@@ -68,8 +68,8 @@ type TunnelAuth struct {
 
 // TunnelTicketInfo is returned only internally after a ticket has been
 // validated. Binary-preface clients consume a ticket once; HTTP CONNECT
-// clients may reuse it during its short lifetime because Chromium opens
-// several proxy sockets for one page.
+// clients may reuse it during the exam window because Chromium opens several
+// proxy sockets for one page.
 type TunnelTicketInfo struct {
 	SessionID  string
 	ExamID     string

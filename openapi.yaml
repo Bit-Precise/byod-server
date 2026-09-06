@@ -35,7 +35,7 @@ paths:
   /v1/sessions/{sessionId}/tunnel-ticket:
     security: []
     parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
-    post: {operationId: issueTunnelTicket, security: [{browserToken: []}], responses: {'201': {description: Short-lived tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use), content: {application/json: {schema: {$ref: '#/components/schemas/TunnelTicket'}}}}, '409': {description: Session is not active}}}
+    post: {operationId: issueTunnelTicket, security: [{browserToken: []}], responses: {'201': {description: Exam-window tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use; revoked when the session is suspended or ended), content: {application/json: {schema: {$ref: '#/components/schemas/TunnelTicket'}}}}, '409': {description: Session is not active}}}
   /openapi.yaml:
     get: {security: [], operationId: getOpenAPI, responses: {'200': {description: OpenAPI document, content: {application/yaml: {schema: {type: string}}}}}}
 components:
