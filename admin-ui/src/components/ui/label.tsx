@@ -1,14 +1,15 @@
-import type { LabelHTMLAttributes } from "react";
-import { cn } from "../../lib/utils";
+import { Field as FieldPrimitive } from "@base-ui/react/field";
+import { cn } from "cn";
 
 export function Label({
   className,
   ...props
-}: LabelHTMLAttributes<HTMLLabelElement>) {
+}: FieldPrimitive.Label.Props) {
   return (
-    <label
+    <FieldPrimitive.Label
+      data-slot="label"
       className={cn(
-        "text-sm font-medium leading-none text-slate-700 peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
+        "flex items-center gap-2 text-sm leading-none font-medium select-none group-data-disabled:pointer-events-none group-data-disabled:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
         className,
       )}
       {...props}
