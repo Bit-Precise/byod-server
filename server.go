@@ -450,14 +450,21 @@ func (s *Service) enforceIdleTimeout(session *Session) bool {
 	}
 	_, maxIdle := s.sessionLimits(session.ExamID)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	suspended := false
 	if session.State == "active" && time.Now().Unix()-session.LastSeenAt > maxIdle {
 		session.State = "suspended"
 		session.ViolationCount++
 		session.LastViolation = "heartbeat_timeout"
+		s.revokeTunnelTicketsLocked(session.ID)
 		s.appendEvent(session, "heartbeat_timeout", "critical", "")
+		suspended = true
 	}
-	return session.State == "active" || session.State == "authenticated"
+	active := session.State == "active" || session.State == "authenticated"
+	s.mu.Unlock()
+	if suspended && s.ExamStore != nil {
+		_ = s.ExamStore.RevokeTunnelTickets(context.Background(), session.ID)
+	}
+	return active
 }
 
 func (s *Service) writeJSON(w http.ResponseWriter, status int, value any) {
@@ -928,6 +935,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			if input.Action == "suspend" {
 				session.State = "suspended"
+				s.revokeTunnelTicketsLocked(session.ID)
 			} else {
 				session.State = "active"
 			}
@@ -939,6 +947,9 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 				auditEvent = ExamEvent{ID: randomToken(12), SessionID: session.ID, Type: "admin_" + input.Action, Severity: "warning", Details: oldState + " -> " + session.State, OccurredAt: time.Now().Unix()}
 			}
 			s.mu.Unlock()
+			if input.Action == "suspend" && s.ExamStore != nil {
+				_ = s.ExamStore.RevokeTunnelTickets(r.Context(), session.ID)
+			}
 			_ = s.ExamStore.SaveSession(r.Context(), &Session{ID: session.ID, ExamID: session.ExamID, Subject: session.Subject, State: session.State, CreatedAt: session.CreatedAt.Unix(), LastSeenAt: session.LastSeenAt.Unix(), ViolationCount: session.ViolationCount})
 			if auditEvent.ID != "" {
 				_ = s.ExamStore.SaveEvent(r.Context(), auditEvent)
@@ -1069,12 +1080,18 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			session.ViolationCount++
 			session.LastViolation = input.Type
+			revoked := false
 			if input.Type == "background" || input.Type == "devtools" {
 				session.State = "suspended"
+				s.revokeTunnelTicketsLocked(session.ID)
+				revoked = true
 			}
 			event := s.appendEvent(session, input.Type, "critical", input.Details)
 			count, state := session.ViolationCount, session.State
 			s.mu.Unlock()
+			if revoked && s.ExamStore != nil {
+				_ = s.ExamStore.RevokeTunnelTickets(r.Context(), session.ID)
+			}
 			s.writeJSON(w, http.StatusOK, map[string]any{"session_id": session.ID, "state": state, "violation_count": count, "event_id": event.ID})
 			return
 		}
@@ -1082,10 +1099,13 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			now := time.Now().Unix()
 			heartbeat, maxIdle := s.sessionLimits(session.ExamID)
+			revoked := false
 			if session.State == "active" && now-session.LastSeenAt > maxIdle {
 				session.State = "suspended"
 				session.ViolationCount++
 				session.LastViolation = "heartbeat_timeout"
+				s.revokeTunnelTicketsLocked(session.ID)
+				revoked = true
 				s.appendEvent(session, "heartbeat_timeout", "critical", "")
 			} else if session.State == "active" {
 				session.LastSeenAt = now
@@ -1093,6 +1113,9 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			state := session.State
 			lastSeen := session.LastSeenAt
 			s.mu.Unlock()
+			if revoked && s.ExamStore != nil {
+				_ = s.ExamStore.RevokeTunnelTickets(r.Context(), session.ID)
+			}
 			if s.ExamStore != nil {
 				_ = s.ExamStore.SaveSession(r.Context(), session)
 			}

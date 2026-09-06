@@ -24,15 +24,19 @@ import (
 )
 
 const (
-	tunnelMagic         = "BYOD"
-	tunnelVersion       = byte(1)
-	tunnelAuthFrame     = byte(1)
-	tunnelAckFrame      = byte(2)
-	tunnelNonceSize     = 16
-	tunnelProofSize     = 32
-	maxTunnelTicket     = 256
-	maxTunnelEndpoint   = 128
-	tunnelTicketTTL     = 30 * time.Second
+	tunnelMagic       = "BYOD"
+	tunnelVersion     = byte(1)
+	tunnelAuthFrame   = byte(1)
+	tunnelAckFrame    = byte(2)
+	tunnelNonceSize   = 16
+	tunnelProofSize   = 32
+	maxTunnelTicket   = 256
+	maxTunnelEndpoint = 128
+	// The grips://exam page is unloaded when the user opens the source site,
+	// so a short TTL cannot be renewed from JavaScript and would cause later
+	// requests to fail with ERR_TUNNEL_CONNECTION_FAILED.  Session state is
+	// checked on every CONNECT and tickets are revoked on suspend/end.
+	tunnelTicketTTL     = 8 * time.Hour
 	tunnelHandshakeTime = 5 * time.Second
 )
 
@@ -146,7 +150,9 @@ func hashTunnelTicket(ticket string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-// IssueTunnelTicket creates a short-lived ticket for one active exam session.
+// IssueTunnelTicket creates a ticket for one active exam session. The ticket
+// remains valid for the exam window while every lookup still requires that
+// the session is active.
 func (s *Service) IssueTunnelTicket(ctx context.Context, sessionID string) (string, TunnelTicketInfo, error) {
 	now := time.Now()
 	s.mu.RLock()

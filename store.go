@@ -245,13 +245,13 @@ func (s *PostgresStore) ConsumeTunnelTicket(ctx context.Context, hash []byte, en
 	return result, true, nil
 }
 
-// LookupTunnelTicket validates a short-lived ticket without consuming it.
-// CONNECT clients may open more than one source connection during a page load;
-// the ticket remains bounded by its expiry and active-session state and is
-// revoked when the session ends.
+// LookupTunnelTicket validates a ticket without consuming it. CONNECT clients
+// may open more than one source connection during an exam; validity remains
+// bounded by expiry and active-session state and is revoked when the session
+// ends.
 func (s *PostgresStore) LookupTunnelTicket(ctx context.Context, hash []byte, endpointID string, now time.Time) (StoredTunnelTicket, bool, error) {
 	var result StoredTunnelTicket
-	err := s.db.QueryRowContext(ctx, `SELECT t.session_id,t.exam_id,t.endpoint_id,t.expires_at FROM byod_tunnel_tickets t JOIN byod_sessions s ON t.session_id=s.id WHERE t.ticket_hash=$1 AND t.endpoint_id=$2 AND t.expires_at>$3 AND s.state='active'`, hash, endpointID, now).Scan(&result.SessionID, &result.ExamID, &result.EndpointID, &result.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT t.session_id,t.exam_id,t.endpoint_id,t.expires_at FROM byod_tunnel_tickets t JOIN byod_sessions s ON t.session_id=s.id WHERE t.ticket_hash=$1 AND t.endpoint_id=$2 AND t.used_at IS NULL AND t.expires_at>$3 AND s.state='active'`, hash, endpointID, now).Scan(&result.SessionID, &result.ExamID, &result.EndpointID, &result.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StoredTunnelTicket{}, false, nil
 	}

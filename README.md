@@ -94,7 +94,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | POST | `/v1/sessions/{id}/end` | 撤销会话，考试结束后解锁 |
 | POST | `/v1/sessions/{id}/violations` | 上报切后台、DevTools 等违规；严重违规会将会话置为 `suspended` |
 | GET | `/v1/sessions/{id}/events` | 读取本次作答的追加式事件审计记录 |
-| POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发短时 tunnel ticket；HTTP CONNECT 在 TTL 内可复用，二进制 preface 单次使用 |
+| POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发考试窗口内有效的 tunnel ticket；HTTP CONNECT 在 TTL 内可复用，二进制 preface 单次使用；session suspend/end 会立即失效 |
 | ANY | `/{exam_id}/{path}` | 旧 HTTP Bearer 代理（仅兼容联调，透明 tunnel 不使用） |
 
 管理员 API（均需 `X-Admin-Token`）：
