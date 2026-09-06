@@ -615,7 +615,10 @@ function LoginScreen({
                 className="mt-2 border-slate-700 bg-slate-950 text-white"
               />
             </Label>
-            <Button className="h-10 w-full bg-indigo-500 hover:bg-indigo-400">
+            <Button
+              type="submit"
+              className="h-10 w-full bg-indigo-500 hover:bg-indigo-400"
+            >
               进入控制中心
               <ArrowRight className="h-4 w-4" />
             </Button>
