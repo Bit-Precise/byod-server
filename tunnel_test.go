@@ -77,6 +77,34 @@ func TestConnectTunnelTicketCanBeReusedWithinTTL(t *testing.T) {
 			t.Fatalf("CONNECT validation %d failed: %#v %v", i, validated, err)
 		}
 	}
+	if remaining := time.Until(info.ExpiresAt); remaining < 7*time.Hour {
+		t.Fatalf("ticket expires too soon for an exam window: %s", remaining)
+	}
+}
+
+func TestTunnelTicketRevokedWhenSessionSuspends(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "https://example.test", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := activateTestSession(t, service, "course-101")
+	ticket, info, err := service.IssueTunnelTicket(context.Background(), session["session_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytes.Repeat([]byte{0x66}, tunnelNonceSize)
+	auth := &TunnelAuth{Ticket: ticket, EndpointID: info.EndpointID, Nonce: nonce,
+		Proof: TunnelAuthProof(ticket, info.EndpointID, nonce)}
+	violation := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session["session_id"]+"/violations", strings.NewReader(`{"type":"background"}`))
+	request.Header.Set("Authorization", "Bearer "+session["browser_token"])
+	service.ServeHTTP(violation, request)
+	if violation.Code != http.StatusOK || !strings.Contains(violation.Body.String(), `"state":"suspended"`) {
+		t.Fatalf("suspension failed: %d %s", violation.Code, violation.Body.String())
+	}
+	if _, err := service.consumeTunnelTicketMode(context.Background(), auth, true); err == nil {
+		t.Fatal("suspended session retained a reusable tunnel ticket")
+	}
 }
 
 func TestTunnelAuthRoundTrip(t *testing.T) {
