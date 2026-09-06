@@ -208,17 +208,21 @@ func (s *Service) policy(examID string) map[string]any {
 			// The fields mirror the first SEB-style baseline. Chromium's native
 			// enforcement consumes these values; keeping them in the signed
 			// document makes the server the single policy source of truth.
-			"allow_background":              false,
-			"allow_new_tabs":                false,
-			"allow_new_windows":             false,
-			"allow_devtools":                false,
-			"allow_print":                   false,
-			"allow_view_source":             false,
-			"allow_save_page":               false,
-			"allow_downloads":               false,
-			"allow_extensions":              false,
-			"allow_incognito":               false,
-			"allow_fullscreen":              true,
+			"allow_background":  false,
+			"allow_new_tabs":    false,
+			"allow_new_windows": false,
+			"allow_devtools":    false,
+			"allow_print":       false,
+			"allow_view_source": false,
+			"allow_save_page":   false,
+			"allow_downloads":   false,
+			"allow_extensions":  false,
+			"allow_incognito":   false,
+			"allow_fullscreen":  true,
+			// This controls browser window fullscreen on exam activation. It is
+			// intentionally separate from allow_fullscreen, which controls page
+			// fullscreen requests.
+			"require_fullscreen":            false,
 			"allow_clipboard_read":          false,
 			"allow_clipboard_write":         false,
 			"allow_screen_capture":          false,

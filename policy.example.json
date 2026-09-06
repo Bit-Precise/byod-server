@@ -9,6 +9,7 @@
       "allow_downloads": false,
       "allow_clipboard_read": false,
       "allow_clipboard_write": false,
+      "require_fullscreen": true,
       "kiosk_mode": true,
       "exit_requires_unlock": true
     },
