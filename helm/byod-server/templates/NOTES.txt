@@ -1,0 +1,6 @@
+BYOD server is deployed as {{ include "byod-server.fullname" . }}.
+Configure a TLS reverse proxy for the exam origin before enabling production OIDC.
+Set policySecret.existingSecret (or policySecret.value for local development)
+and oidc.existingSecret before starting a production release.
+For browser tunnel traffic, set tunnel.endpoint to the public TCP host:port and
+enable tunnel.service or provide an equivalent Gateway TCPRoute/L4 service.

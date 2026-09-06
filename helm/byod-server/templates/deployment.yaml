@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "byod-server.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "byod-server.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "byod-server.fullname" . }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: byod-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          args:
+            - --listen=:8787
+            - --tunnel-listen=:8788
+            {{- if .Values.tunnel.endpoint }}
+            - --tunnel-endpoint={{ .Values.tunnel.endpoint }}
+            {{- end }}
+            - --exam-origin={{ .Values.examOrigin }}
+            - --upstream={{ .Values.upstream }}
+            - --policy-file={{ .Values.policyFile }}
+            {{- if .Values.devAuth }}
+            - --dev-auth
+            {{- end }}
+          env:
+            - name: BYOD_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: BYOD_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: BYOD_OIDC_REDIRECT_URL
+              value: {{ .Values.oidc.redirectUrl | quote }}
+            {{- if .Values.oidc.existingSecret }}
+            - name: BYOD_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.oidc.existingSecret }}
+                  key: {{ .Values.oidc.clientSecretKey }}
+            {{- end }}
+            {{- if .Values.database.existingSecret }}
+            - name: BYOD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            {{- end }}
+            {{- if .Values.admin.existingSecret }}
+            - name: BYOD_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.admin.existingSecret }}
+                  key: {{ .Values.admin.tokenKey }}
+            {{- end }}
+            {{- if or .Values.policySecret.existingSecret .Values.policySecret.value }}
+            - name: BYOD_POLICY_SECRET
+              {{- if .Values.policySecret.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.policySecret.existingSecret }}
+                  key: {{ .Values.policySecret.key }}
+              {{- else }}
+              value: {{ .Values.policySecret.value | quote }}
+              {{- end }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8787
+            - name: tunnel
+              containerPort: 8788
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/byod/policy
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "byod-server.fullname" . }}-policy

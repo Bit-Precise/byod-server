@@ -1,0 +1,19 @@
+{{- if .Values.tunnel.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "byod-server.fullname" . }}-tunnel
+  {{- with .Values.tunnel.service.annotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.tunnel.service.type }}
+  selector:
+    app: {{ include "byod-server.fullname" . }}
+  ports:
+    - name: tunnel
+      port: {{ .Values.tunnel.service.port }}
+      targetPort: 8788
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,46 @@
+replicaCount: 1
+image:
+  repository: ghcr.io/bit-precise/byod-server
+  tag: 0.6.0
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 8787
+  tunnelPort: 8788
+tunnel:
+  # Public host:port advertised to BYOD Browser. It must resolve to a raw TCP
+  # listener; the HTTP Ingress below cannot carry this traffic.
+  endpoint: ""
+  service:
+    enabled: false
+    type: LoadBalancer
+    port: 443
+    annotations: {}
+examOrigin: https://exam.cs.ac.cn
+upstream: http://exam-upstream:9000
+devAuth: false
+policyFile: /etc/byod/policy/policy.json
+policyJson: '{}'
+oidc:
+  issuer: ""
+  clientId: ""
+  redirectUrl: https://exam.cs.ac.cn/oidc/callback
+  existingSecret: ""
+  clientSecretKey: client-secret
+database:
+  existingSecret: ""
+  urlKey: database-url
+admin:
+  existingSecret: ""
+  tokenKey: admin-token
+policySecret:
+  existingSecret: ""
+  key: policy-secret
+  # Required for production. Set this only for local development.
+  value: ""
+ingress:
+  enabled: false
+  className: nginx
+  host: exam.cs.ac.cn
+  tlsSecret: byod-exam-tls
+resources: {}

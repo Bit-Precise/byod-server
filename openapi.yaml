@@ -1,0 +1,51 @@
+openapi: 3.0.3
+info: {title: BYOD Server API, version: 0.6.0}
+servers: [{url: https://exam.cs.ac.cn}]
+security: [{adminToken: []}]
+paths:
+  /admin/api/exams:
+    get: {operationId: listExams, responses: {'200': {description: Exams, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Exam'}}}}}}}
+    post: {operationId: createExam, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamInput'}}}}, responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
+  /admin/api/exams/{examId}:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: getExam, responses: {'200': {description: Exam, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
+    patch: {operationId: updateExam, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamInput'}}}}, responses: {'200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
+    delete: {operationId: deleteExam, responses: {'204': {description: Deleted}}}
+  /admin/api/exams/{examId}/students:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: listExamStudents, responses: {'200': {description: Students, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Student'}}}}}}}
+  /admin/api/exams/{examId}/students/{subject}:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: subject, in: path, required: true, schema: {type: string}}]
+    put: {operationId: addExamStudent, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/StudentInput'}}}}, responses: {'204': {description: Added}}}
+    delete: {operationId: removeExamStudent, responses: {'204': {description: Removed}}}
+  /admin/api/exams/{examId}/sessions:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: listExamSessions, responses: {'200': {description: Sessions, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Session'}}}}}}}
+  /admin/api/sessions/{sessionId}:
+    parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: getSession, responses: {'200': {description: Session, content: {application/json: {schema: {$ref: '#/components/schemas/Session'}}}}}}
+    post: {operationId: updateSession, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SessionAction'}}}}, responses: {'200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Session'}}}}}}
+  /admin/api/sessions:
+    get: {operationId: listSessions, responses: {'200': {description: Sessions, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Session'}}}}}}}
+  /admin/api/sessions/{sessionId}/events:
+    parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: listSessionEvents, responses: {'200': {description: Events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Event'}}}}}}}
+  /admin/api/events:
+    get: {operationId: listEvents, parameters: [{name: limit, in: query, required: false, schema: {type: integer, maximum: 1000}}], responses: {'200': {description: Events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Event'}}}}}}}
+  /v1/sessions/{sessionId}/tunnel-ticket:
+    security: []
+    parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
+    post: {operationId: issueTunnelTicket, security: [{browserToken: []}], responses: {'201': {description: Short-lived tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use), content: {application/json: {schema: {$ref: '#/components/schemas/TunnelTicket'}}}}, '409': {description: Session is not active}}}
+  /openapi.yaml:
+    get: {security: [], operationId: getOpenAPI, responses: {'200': {description: OpenAPI document, content: {application/yaml: {schema: {type: string}}}}}}
+components:
+  securitySchemes: {adminToken: {type: apiKey, in: header, name: X-Admin-Token}, browserToken: {type: http, scheme: bearer}}
+  schemas:
+    Exam: {type: object, required: [id, base_url, state], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
+    ExamInput: {type: object, required: [id, base_url], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
+    Student: {type: object, required: [subject, enabled], properties: {subject: {type: string}, display_name: {type: string}, enabled: {type: boolean}}}
+    StudentInput: {type: object, properties: {display_name: {type: string}, enabled: {type: boolean}}}
+    Session: {type: object, required: [id, exam_id, subject, state, created_at], properties: {id: {type: string}, exam_id: {type: string}, subject: {type: string}, state: {type: string}, created_at: {type: string, format: date-time}, last_seen_at: {type: string, format: date-time}, violation_count: {type: integer}}}
+    SessionAction: {type: object, required: [action], properties: {action: {type: string, enum: [suspend, resume]}}}
+    Event: {type: object, required: [id, session_id, type, severity, occurred_at], properties: {id: {type: string}, session_id: {type: string}, attempt_id: {type: string}, browser_session_id: {type: string}, type: {type: string}, severity: {type: string}, details: {type: string}, occurred_at: {type: integer, format: int64}}}
+    TunnelTicket: {type: object, required: [ticket, endpoint_id, expires_at, protocol], properties: {ticket: {type: string}, endpoint_id: {type: string}, expires_at: {type: string, format: date-time}, protocol: {type: string, enum: [byod-tunnel-v1]}}}

@@ -1,0 +1,34 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  packages: write
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: ${{ github.actor }}, password: ${{ secrets.GITHUB_TOKEN }}}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=match,pattern=v(.*),group=1
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Package chart
+        run: helm package helm/byod-server --version "${GITHUB_REF_NAME#v}" --app-version "${GITHUB_REF_NAME#v}" --destination /tmp/chart
+      - name: Login to GHCR for Helm
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push chart
+        run: helm push /tmp/chart/byod-server-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
