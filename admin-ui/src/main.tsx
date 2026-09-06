@@ -161,9 +161,13 @@ function StateBadge({ state }: { state: string }) {
 
 function App() {
   const [token, setToken] = useState(
-    () => localStorage.getItem("byod.admin_token") || "",
+    () => {
+      const value = localStorage.getItem("byod.admin_token") || "";
+      return /^[\x21-\x7e]+$/.test(value.trim()) ? value.trim() : "";
+    },
   );
   const [draftToken, setDraftToken] = useState(token);
+  const [authMessage, setAuthMessage] = useState("");
   const [section, setSection] = useState<Section>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [exams, setExams] = useState<Exam[]>([]);
@@ -213,6 +217,15 @@ function App() {
   useEffect(() => {
     if (token) void refresh();
   }, [refresh, token]);
+  useEffect(() => {
+    const handleInvalidToken = () => {
+      setToken("");
+      setDraftToken("");
+      setAuthMessage("管理员 Token 包含非法字符，已清除，请重新粘贴 Token。");
+    };
+    window.addEventListener("byod:invalid-token", handleInvalidToken);
+    return () => window.removeEventListener("byod:invalid-token", handleInvalidToken);
+  }, []);
   const loadStudents = useCallback(async (exam: Exam) => {
     setSelectedExam(exam);
     const result = await api.GET("/admin/api/exams/{examId}/students", {
@@ -274,11 +287,15 @@ function App() {
       <LoginScreen
         draftToken={draftToken}
         setDraftToken={setDraftToken}
+        message={authMessage}
         onLogin={() => {
           const value = draftToken.trim();
-          if (value) {
+          if (value && /^[\x21-\x7e]+$/.test(value)) {
             localStorage.setItem("byod.admin_token", value);
+            setAuthMessage("");
             setToken(value);
+          } else if (value) {
+            setAuthMessage("Token 只能包含 ASCII 字符，请检查复制的内容。");
           }
         }}
       />
@@ -567,10 +584,12 @@ function SidebarNav({
 function LoginScreen({
   draftToken,
   setDraftToken,
+  message,
   onLogin,
 }: {
   draftToken: string;
   setDraftToken: (value: string) => void;
+  message: string;
   onLogin: () => void;
 }) {
   return (
@@ -623,6 +642,14 @@ function LoginScreen({
               <ArrowRight className="h-4 w-4" />
             </Button>
           </form>
+          {message && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="whitespace-pre-line text-red-700">
+                {message}
+              </AlertDescription>
+            </Alert>
+          )}
           <p className="mt-5 text-center text-xs text-slate-500">
             Token 仅保存在当前浏览器的本地存储中
           </p>

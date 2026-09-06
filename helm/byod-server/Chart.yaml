@@ -2,5 +2,5 @@ apiVersion: v2
 name: byod-server
 description: BYOD exam control plane and exam-origin proxy
 type: application
-version: 0.6.10
-appVersion: "0.6.10"
+version: 0.6.11
+appVersion: "0.6.11"
