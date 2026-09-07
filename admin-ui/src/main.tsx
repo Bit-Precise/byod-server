@@ -99,6 +99,7 @@ import {
 } from "./components/ui/sheet";
 import { Separator } from "./components/ui/separator";
 import { Skeleton } from "./components/ui/skeleton";
+import { Switch } from "./components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import {
   Tooltip,
@@ -1546,6 +1547,7 @@ function ExamDialog({
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
   const [policy, setPolicy] = useState("{}");
+  const [requireFullscreen, setRequireFullscreen] = useState(false);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -1555,7 +1557,11 @@ function ExamDialog({
     setState(exam?.state || "draft");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
     setEnds(exam?.ends_at ? exam.ends_at.slice(0, 16) : "");
+    const examPolicy = exam?.policy as
+      | { browser?: { require_fullscreen?: unknown } }
+      | undefined;
     setPolicy(exam?.policy ? JSON.stringify(exam.policy, null, 2) : "{}");
+    setRequireFullscreen(examPolicy?.browser?.require_fullscreen === true);
     setFormError("");
   }, [exam, open]);
   const submit = async (event: FormEvent) => {
@@ -1569,6 +1575,20 @@ function ExamDialog({
       setFormError("策略必须是合法 JSON。");
       return;
     }
+    const browserPolicy = policyValue.browser;
+    if (
+      browserPolicy !== undefined &&
+      (typeof browserPolicy !== "object" ||
+        browserPolicy === null ||
+        Array.isArray(browserPolicy))
+    ) {
+      setFormError("策略中的 browser 必须是 JSON 对象。");
+      return;
+    }
+    policyValue.browser = {
+      ...(browserPolicy as Record<string, unknown> | undefined),
+      require_fullscreen: requireFullscreen,
+    };
     if (!id.trim() || !baseURL.trim()) {
       setFormError("考试 ID 和源站 URL 不能为空。");
       return;
@@ -1690,6 +1710,19 @@ function ExamDialog({
             />
           </div>
         </div>
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-slate-50/70 px-4 py-3">
+          <div className="space-y-1">
+            <Label htmlFor="exam-require-fullscreen">进入考试后自动全屏</Label>
+            <p className="text-xs text-slate-500">
+              身份认证和策略加载成功后，将整个 BYOD Browser 窗口切换为全屏；考试结束时恢复原状态。
+            </p>
+          </div>
+          <Switch
+            id="exam-require-fullscreen"
+            checked={requireFullscreen}
+            onCheckedChange={setRequireFullscreen}
+          />
+        </div>
         <div className="space-y-2">
           <Label htmlFor="exam-policy">浏览器策略 JSON</Label>
           <Textarea
@@ -1700,7 +1733,8 @@ function ExamDialog({
             spellCheck={false}
           />
           <p className="text-xs text-slate-500">
-            策略会在签名后下发给 BYOD Browser；空对象使用服务端安全基线。
+            策略会在签名后下发给 BYOD Browser；上面的开关会写入
+            browser.require_fullscreen，其余高级配置可在这里编辑。
           </p>
         </div>
         {formError && (
