@@ -298,11 +298,19 @@ func TestPolicyOverrideParsing(t *testing.T) {
 
 func TestPolicyOverrideMergesSafeDefaults(t *testing.T) {
 	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
-	service.PolicyOverrides = map[string]map[string]any{"course-101": {"browser": map[string]any{"allow_print": true}}}
+	service.PolicyOverrides = map[string]map[string]any{"course-101": {
+		"browser":    map[string]any{"allow_print": true},
+		"navigation": map[string]any{"allowed_origins": []any{"https://iaaa.gbu.edu.cn"}},
+	}}
 	document := service.policy("course-101")["document"].(map[string]any)
 	browser := document["browser"].(map[string]any)
 	if browser["allow_print"] != true || browser["allow_devtools"] != false || browser["kiosk_mode"] != true || browser["require_fullscreen"] != false {
 		t.Fatalf("policy defaults were not preserved: %#v", browser)
+	}
+	navigation := document["navigation"].(map[string]any)
+	allowedOrigins := navigation["allowed_origins"].([]any)
+	if len(allowedOrigins) != 1 || allowedOrigins[0] != "https://iaaa.gbu.edu.cn" {
+		t.Fatalf("navigation allowlist override was not applied: %#v", allowedOrigins)
 	}
 
 	service.PolicyOverrides = map[string]map[string]any{"course-101": {"browser": map[string]any{"require_fullscreen": true}}}

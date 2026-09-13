@@ -14,6 +14,11 @@
       "exit_requires_unlock": true
     },
     "navigation": {
+      "allowed_origins": [
+        "https://exam.cs.ac.cn",
+        "https://cs101.gbu.edu.cn",
+        "https://iaaa.gbu.edu.cn"
+      ],
       "allowed_paths": ["/course-101/**"],
       "blocked_schemes": ["file", "javascript", "data", "devtools"]
     },
