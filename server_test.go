@@ -304,7 +304,7 @@ func TestPolicyOverrideMergesSafeDefaults(t *testing.T) {
 	}}
 	document := service.policy("course-101")["document"].(map[string]any)
 	browser := document["browser"].(map[string]any)
-	if browser["allow_print"] != true || browser["allow_devtools"] != false || browser["kiosk_mode"] != true || browser["require_fullscreen"] != false {
+	if browser["allow_print"] != true || browser["allow_devtools"] != false || browser["kiosk_mode"] != true || browser["require_fullscreen"] != false || browser["lock_fullscreen"] != false {
 		t.Fatalf("policy defaults were not preserved: %#v", browser)
 	}
 	navigation := document["navigation"].(map[string]any)
@@ -318,6 +318,13 @@ func TestPolicyOverrideMergesSafeDefaults(t *testing.T) {
 	browser = document["browser"].(map[string]any)
 	if browser["require_fullscreen"] != true {
 		t.Fatalf("require_fullscreen override was not applied: %#v", browser)
+	}
+
+	service.PolicyOverrides = map[string]map[string]any{"course-101": {"browser": map[string]any{"require_fullscreen": true, "lock_fullscreen": true}}}
+	document = service.policy("course-101")["document"].(map[string]any)
+	browser = document["browser"].(map[string]any)
+	if browser["require_fullscreen"] != true || browser["lock_fullscreen"] != true {
+		t.Fatalf("lock_fullscreen override was not applied: %#v", browser)
 	}
 }
 

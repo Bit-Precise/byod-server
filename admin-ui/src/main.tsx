@@ -1548,6 +1548,7 @@ function ExamDialog({
   const [ends, setEnds] = useState("");
   const [policy, setPolicy] = useState("{}");
   const [requireFullscreen, setRequireFullscreen] = useState(false);
+  const [lockFullscreen, setLockFullscreen] = useState(false);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -1558,10 +1559,11 @@ function ExamDialog({
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
     setEnds(exam?.ends_at ? exam.ends_at.slice(0, 16) : "");
     const examPolicy = exam?.policy as
-      | { browser?: { require_fullscreen?: unknown } }
+      | { browser?: { require_fullscreen?: unknown; lock_fullscreen?: unknown } }
       | undefined;
     setPolicy(exam?.policy ? JSON.stringify(exam.policy, null, 2) : "{}");
     setRequireFullscreen(examPolicy?.browser?.require_fullscreen === true);
+    setLockFullscreen(examPolicy?.browser?.lock_fullscreen === true);
     setFormError("");
   }, [exam, open]);
   const submit = async (event: FormEvent) => {
@@ -1588,6 +1590,7 @@ function ExamDialog({
     policyValue.browser = {
       ...(browserPolicy as Record<string, unknown> | undefined),
       require_fullscreen: requireFullscreen,
+      lock_fullscreen: requireFullscreen && lockFullscreen,
     };
     if (!id.trim() || !baseURL.trim()) {
       setFormError("考试 ID 和源站 URL 不能为空。");
@@ -1720,7 +1723,24 @@ function ExamDialog({
           <Switch
             id="exam-require-fullscreen"
             checked={requireFullscreen}
-            onCheckedChange={setRequireFullscreen}
+            onCheckedChange={(checked) => {
+              setRequireFullscreen(checked);
+              if (!checked) setLockFullscreen(false);
+            }}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3">
+          <div className="space-y-1">
+            <Label htmlFor="exam-lock-fullscreen">考试期间禁止退出全屏</Label>
+            <p className="text-xs text-amber-800/80">
+              启用后 Esc、F11 和浏览器菜单的退出全屏操作会被拦截；必须先结束考试或由监考端解除策略。
+            </p>
+          </div>
+          <Switch
+            id="exam-lock-fullscreen"
+            checked={lockFullscreen}
+            disabled={!requireFullscreen}
+            onCheckedChange={setLockFullscreen}
           />
         </div>
         <div className="space-y-2">
@@ -1734,7 +1754,7 @@ function ExamDialog({
           />
           <p className="text-xs text-slate-500">
             策略会在签名后下发给 BYOD Browser；上面的开关会写入
-            browser.require_fullscreen，其余高级配置可在这里编辑。
+            browser.require_fullscreen 和 browser.lock_fullscreen，其余高级配置可在这里编辑。
           </p>
         </div>
         {formError && (

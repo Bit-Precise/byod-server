@@ -222,7 +222,11 @@ func (s *Service) policy(examID string) map[string]any {
 			// This controls browser window fullscreen on exam activation. It is
 			// intentionally separate from allow_fullscreen, which controls page
 			// fullscreen requests.
-			"require_fullscreen":            false,
+			"require_fullscreen": false,
+			// When enabled together with require_fullscreen, Chromium rejects
+			// Esc/F11/menu attempts to leave the exam's browser fullscreen mode.
+			// It is cleared automatically when the session ends.
+			"lock_fullscreen":               false,
 			"allow_clipboard_read":          false,
 			"allow_clipboard_write":         false,
 			"allow_screen_capture":          false,
