@@ -76,7 +76,7 @@ UI 嵌入 Go 二进制；干净 checkout 不依赖本地 `dist` 文件。
 curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 ```
 
-配置中的 `policy.document` 是 canonical JSON，`policy.signature` 是使用 `BYOD_POLICY_SECRET` 生成的 HMAC-SHA256。`document.browser` 包含禁止切后台、禁止新标签页、禁止 DevTools、打印/下载/剪贴板等 SEB 风格基线项；浏览器必须在进入限制模式前验证签名、`key_id`、考试 ID 和目标 origin。
+配置中的 `policy.document` 是 canonical JSON，`policy.signature` 是使用 `BYOD_POLICY_SECRET` 生成的 HMAC-SHA256。`document.browser` 包含禁止切后台、禁止新标签页、禁止 DevTools、打印/下载/剪贴板等 SEB 风格基线项；`require_fullscreen` 控制进入浏览器窗口全屏，和 `lock_fullscreen` 同时为 `true` 时拦截 Esc、F11 及菜单退出全屏；浏览器必须在进入限制模式前验证签名、`key_id`、考试 ID 和目标 origin。
 
 ## 浏览器联调协议
 
