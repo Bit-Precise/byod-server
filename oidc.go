@@ -33,8 +33,12 @@ func NewOIDCAuthenticator(ctx context.Context, issuer, clientID, clientSecret, r
 	}
 	auth := &OIDCAuthenticator{Issuer: issuer, ClientID: clientID, ClientSecret: clientSecret,
 		RedirectURL: redirectURL, Provider: provider}
+	// Connect's discovery document advertises `openid` (and offline scopes),
+	// but not the optional `profile` scope. Request only the declared scope so
+	// strict providers do not reject the authorization request with
+	// `invalid_scope`.
 	auth.OAuth2 = oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: provider.Endpoint(), RedirectURL: redirectURL,
-		Scopes: []string{oidc.ScopeOpenID, "profile"}}
+		Scopes: []string{oidc.ScopeOpenID}}
 	auth.Verifier = provider.Verifier(&oidc.Config{ClientID: clientID})
 	return auth, nil
 }
