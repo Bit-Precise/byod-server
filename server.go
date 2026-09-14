@@ -77,6 +77,16 @@ type BrowserSession struct {
 	RevokedAt  int64
 }
 
+// browserLoginState is a short-lived, one-time OIDC transaction used by the
+// Settings "Sign in with Connect" entry point. It deliberately does not mint
+// an exam session: its only purpose is to complete a real authorization-code
+// flow in the normal browser profile so a later exam authorization can reuse
+// the Connect SSO session.
+type browserLoginState struct {
+	CodeVerifier string
+	CreatedAt    time.Time
+}
+
 type ExamEvent struct {
 	ID               string `json:"id"`
 	SessionID        string `json:"session_id"`
@@ -110,6 +120,7 @@ type Service struct {
 	exams           map[string]*Exam
 	events          map[string][]ExamEvent
 	tunnelTickets   map[string]*tunnelTicket
+	browserLogins   map[string]*browserLoginState
 }
 
 func (s *Service) upstreamForExam(ctx context.Context, examID string) (*url.URL, error) {
@@ -140,7 +151,7 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 		ExamUpstreams:  make(map[string]*url.URL),
 		PolicySecret:   secret, OIDCAuthorize: "https://idp.example/authorize",
 		sessions: make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent),
-		tunnelTickets: make(map[string]*tunnelTicket)}, nil
+		tunnelTickets: make(map[string]*tunnelTicket), browserLogins: make(map[string]*browserLoginState)}, nil
 }
 
 // ParseExamUpstreams parses an operator-supplied JSON object mapping exam IDs
@@ -395,6 +406,60 @@ func (s *Service) authorizationURL(session *Session) string {
 	return s.OIDCAuthorize + "?" + query.Encode()
 }
 
+func (s *Service) beginBrowserLogin(w http.ResponseWriter, r *http.Request) {
+	if s.OIDC == nil && !s.DevAuth {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "oidc_not_configured"})
+		return
+	}
+	state := "browser-" + randomToken(24)
+	verifier := pkceVerifier()
+	now := time.Now()
+	s.mu.Lock()
+	if s.browserLogins == nil {
+		s.browserLogins = make(map[string]*browserLoginState)
+	}
+	for key, pending := range s.browserLogins {
+		if pending == nil || now.Sub(pending.CreatedAt) >= 15*time.Minute {
+			delete(s.browserLogins, key)
+		}
+	}
+	s.browserLogins[state] = &browserLoginState{CodeVerifier: verifier, CreatedAt: now}
+	s.mu.Unlock()
+
+	authorizationURL := s.ExamOrigin + "/dev/browser-authorize?state=" + url.QueryEscape(state)
+	if s.OIDC != nil && !s.DevAuth {
+		authorizationURL = s.OIDC.authorizationURL(state, verifier)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, authorizationURL, http.StatusFound)
+}
+
+func (s *Service) finishBrowserLogin(w http.ResponseWriter, r *http.Request, state, code string) bool {
+	if !strings.HasPrefix(state, "browser-") {
+		return false
+	}
+	s.mu.Lock()
+	pending := s.browserLogins[state]
+	valid := code != "" && pending != nil && time.Since(pending.CreatedAt) < 15*time.Minute
+	// Authorization codes and state values are single-use. Reserve the state
+	// before exchanging the code so concurrent callbacks cannot both succeed.
+	delete(s.browserLogins, state)
+	s.mu.Unlock()
+	if !valid {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_browser_login_callback"})
+		return true
+	}
+	if s.OIDC != nil && !s.DevAuth {
+		if _, err := s.OIDC.exchange(r.Context(), code, pending.CodeVerifier); err != nil {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "oidc_exchange_failed"})
+			return true
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, "grips://login/?complete=1", http.StatusSeeOther)
+	return true
+}
+
 func tokenFromRequest(r *http.Request) string {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -553,6 +618,10 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-server", "oidc": s.OIDC != nil || s.DevAuth})
 		return
 	}
+	if r.URL.Path == "/browser/login" {
+		s.beginBrowserLogin(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/.well-known/byod-configuration") {
 		if examID := examIDFromWellKnown(r.URL.Path); examID != "" {
 			if s.ExamStore != nil {
@@ -572,6 +641,9 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/oidc/callback" {
 		state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
+		if s.finishBrowserLogin(w, r, state, code) {
+			return
+		}
 		s.mu.Lock()
 		session := s.sessions[state]
 		validState := code != "" && session != nil && session.State == "pending" && time.Since(time.Unix(session.CreatedAt, 0)) < 15*time.Minute
@@ -685,6 +757,23 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		query := callback.Query()
 		query.Set("state", state)
 		query.Set("code", "dev-student-42")
+		callback.RawQuery = query.Encode()
+		http.Redirect(w, r, callback.String(), http.StatusSeeOther)
+		return
+	}
+	if r.URL.Path == "/dev/browser-authorize" && s.DevAuth {
+		state := r.URL.Query().Get("state")
+		s.mu.RLock()
+		_, ok := s.browserLogins[state]
+		s.mu.RUnlock()
+		if !ok {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_state"})
+			return
+		}
+		callback := &url.URL{Path: "/oidc/callback"}
+		query := callback.Query()
+		query.Set("state", state)
+		query.Set("code", "dev-browser-login")
 		callback.RawQuery = query.Encode()
 		http.Redirect(w, r, callback.String(), http.StatusSeeOther)
 		return

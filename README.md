@@ -22,6 +22,13 @@ go run ./cmd/byod-server --dev-auth --listen 127.0.0.1:8787 \
 
 生产 OIDC 使用 `--oidc-issuer`、`--oidc-client-id`、`--oidc-client-secret` 和
 `--oidc-redirect-url`（也可通过 `BYOD_OIDC_*` 环境变量提供）。
+
+当 issuer 配置为 `https://connect.cs.ac.cn` 时，BYOD Browser 的
+`grips://login` 会在普通 profile 中打开 `/browser/login`。中台生成一次性的
+state 和 PKCE challenge，再跳转到 discovery 文档中的 authorization endpoint；
+考试启动时的 authorization-code + PKCE 跳转会复用该 profile 的 Connect SSO
+cookie。中台只在服务端交换 code 并校验 ID token，不读取、复制或下发 Connect
+cookie。
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
@@ -85,6 +92,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
+| GET | `/browser/login` | 启动浏览器级 Connect authorization-code + PKCE 登录 |
 | GET | `/{exam_id}/.well-known/byod-configuration` | 读取 OIDC、策略和考试代理信息 |
 | POST | `/v1/sessions` | 创建会话，返回登录 URL 和会话 ID |
 | GET | `/oidc/callback` | OIDC 回调；服务端交换 code，不把 IdP token 返回浏览器 |

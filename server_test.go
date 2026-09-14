@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -194,6 +195,55 @@ func TestDevelopmentAuthorizationAdapter(t *testing.T) {
 	service.ServeHTTP(dev, httptest.NewRequest(http.MethodGet, "/dev/authorize?state="+session["session_id"], nil))
 	if dev.Code != http.StatusSeeOther || !strings.Contains(dev.Header().Get("Location"), "/oidc/callback") {
 		t.Fatalf("dev authorize: %d %s", dev.Code, dev.Header().Get("Location"))
+	}
+}
+
+func TestBrowserLoginUsesAuthorizationCodeFlow(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.DevAuth = true
+
+	start := httptest.NewRecorder()
+	service.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/browser/login", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("browser login start: %d %s", start.Code, start.Body.String())
+	}
+	authorize, err := url.Parse(start.Header().Get("Location"))
+	if err != nil || authorize.Path != "/dev/browser-authorize" || !strings.HasPrefix(authorize.Query().Get("state"), "browser-") {
+		t.Fatalf("unexpected browser authorization URL: %q", start.Header().Get("Location"))
+	}
+
+	dev := httptest.NewRecorder()
+	service.ServeHTTP(dev, httptest.NewRequest(http.MethodGet, authorize.RequestURI(), nil))
+	if dev.Code != http.StatusSeeOther {
+		t.Fatalf("browser dev authorize: %d %s", dev.Code, dev.Body.String())
+	}
+	callbackURL, err := url.Parse(dev.Header().Get("Location"))
+	if err != nil || callbackURL.Path != "/oidc/callback" || callbackURL.Query().Get("state") != authorize.Query().Get("state") {
+		t.Fatalf("unexpected browser callback URL: %q", dev.Header().Get("Location"))
+	}
+
+	callback := httptest.NewRecorder()
+	service.ServeHTTP(callback, httptest.NewRequest(http.MethodGet, callbackURL.RequestURI(), nil))
+	if callback.Code != http.StatusSeeOther || callback.Header().Get("Location") != "grips://login/?complete=1" {
+		t.Fatalf("browser callback: %d %q", callback.Code, callback.Header().Get("Location"))
+	}
+
+	replayed := httptest.NewRecorder()
+	service.ServeHTTP(replayed, httptest.NewRequest(http.MethodGet, callbackURL.RequestURI(), nil))
+	if replayed.Code != http.StatusBadRequest {
+		t.Fatalf("browser callback state was reusable: %d", replayed.Code)
+	}
+}
+
+func TestBrowserLoginRequiresOIDC(t *testing.T) {
+	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	recorder := httptest.NewRecorder()
+	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/browser/login", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("browser login without OIDC: %d", recorder.Code)
 	}
 }
 

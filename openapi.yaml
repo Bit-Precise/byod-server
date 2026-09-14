@@ -3,6 +3,15 @@ info: {title: BYOD Server API, version: 0.6.0}
 servers: [{url: https://exam.cs.ac.cn}]
 security: [{adminToken: []}]
 paths:
+  /browser/login:
+    get:
+      security: []
+      operationId: beginBrowserLogin
+      responses:
+        '302':
+          description: Redirect to the configured OIDC authorization endpoint
+          headers:
+            Location: {schema: {type: string, format: uri}}
   /admin/api/exams:
     get: {operationId: listExams, responses: {'200': {description: Exams, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Exam'}}}}}}}
     post: {operationId: createExam, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamInput'}}}}, responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
