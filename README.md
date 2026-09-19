@@ -53,8 +53,8 @@ helm upgrade --install byod helm/byod-server \
   --set oidc.existingSecret=byod-oidc
 ```
 
-访问 `/admin/` 打开管理员后台，使用 Connect OIDC 登录。只有 `admin` 角色用户可以访问控制中心；首次部署通过 `BYOD_ADMIN_EMAILS`（Helm 的 `adminEmails`）指定可自动成为管理员的已验证邮箱。普通学生和管理员均使用同一 OIDC 用户目录。
-后台提供考试、全局用户、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把全局用户加入考试名单；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。
+访问 `/admin/` 打开控制中心，所有身份均使用 Connect OIDC 登录。权限不是互斥角色：平台管理员由 `platform_admin` 能力授予，可管理全局用户和所有考试；考试管理员通过 `byod_exam_admins` 单独绑定到某场考试，只能管理该考试；普通用户是全局用户目录中的基础身份，也可以同时拥有上述任一能力和考试参加资格。首次部署通过 `BYOD_ADMIN_EMAILS`（Helm 的 `adminEmails`）指定可自动成为平台管理员的已验证邮箱。
+后台提供考试、全局用户、考试管理员、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把用户加入考试名单或授予某场考试的管理员能力；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
@@ -131,8 +131,10 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | GET/POST | `/admin/api/sessions/{id}` | 查看或暂停/恢复 session |
 | GET | `/admin/api/events` | 查询全局审计事件 |
 | GET/POST | `/admin/api/users` | 按邮箱查询/预先建立全局用户 |
-| GET/PATCH | `/admin/api/users/{user_id}` | 查看、启停用户和调整角色 |
+| GET/PATCH | `/admin/api/users/{user_id}` | 查看、启停用户和调整 `platform_admin` 能力 |
 | GET/PUT/DELETE | `/admin/api/exams/{id}/participants/{user_id}` | 从全局用户目录配置考试参加资格 |
+| GET | `/admin/api/exams/{id}/admins` | 查看该考试管理员 |
+| PUT/DELETE | `/admin/api/exams/{id}/admins/{user_id}` | 授予/撤销该考试管理员能力（平台管理员） |
 | GET | `/admin/api/user-audit` | 查询用户和权限审计日志 |
 
 会话接口使用 `Authorization: Bearer <browser_session_token>`。服务端不会信任浏览器自行提交的用户身份。旧 HTTP Bearer 代理（仅兼容联调）可生成

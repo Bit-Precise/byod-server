@@ -50,6 +50,13 @@ paths:
     parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: userId, in: path, required: true, schema: {type: string}}]
     put: {operationId: setExamParticipant, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/ParticipantInput'}}}}, responses: {'204': {description: Updated}}}
     delete: {operationId: removeExamParticipant, responses: {'204': {description: Removed}}}
+  /admin/api/exams/{examId}/admins:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    get: {operationId: listExamAdmins, responses: {'200': {description: Exam administrators, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ExamAdmin'}}}}}}}
+  /admin/api/exams/{examId}/admins/{userId}:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: userId, in: path, required: true, schema: {type: string}}]
+    put: {operationId: setExamAdmin, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/ParticipantInput'}}}}, responses: {'204': {description: Updated}}}
+    delete: {operationId: removeExamAdmin, responses: {'204': {description: Removed}}}
   /admin/api/user-audit:
     get: {operationId: listUserAudit, responses: {'200': {description: User audit events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/UserAudit'}}}}}}}
   /admin/api/exams/{examId}/sessions:
@@ -119,13 +126,14 @@ components:
     ViolationInput: {type: object, required: [type], properties: {type: {type: string}, details: {type: string}}}
     Student: {type: object, required: [subject, enabled], properties: {subject: {type: string}, display_name: {type: string}, enabled: {type: boolean}}}
     StudentInput: {type: object, properties: {display_name: {type: string}, enabled: {type: boolean}}}
-    User: {type: object, required: [id, issuer, role, enabled, display_name, created_at], properties: {id: {type: string}, issuer: {type: string}, subject: {type: string, nullable: true}, email: {type: string, format: email, nullable: true}, display_name: {type: string}, role: {type: string, enum: [student, admin]}, enabled: {type: boolean}, created_at: {type: string, format: date-time}, last_login_at: {type: string, format: date-time, nullable: true}}}
-    UserInput: {type: object, required: [email], properties: {email: {type: string, format: email}, display_name: {type: string}, role: {type: string, enum: [student, admin]}}}
-    UserUpdate: {type: object, properties: {display_name: {type: string}, role: {type: string, enum: [student, admin]}, enabled: {type: boolean}}}
+    User: {type: object, required: [id, issuer, role, platform_admin, enabled, display_name, created_at], properties: {id: {type: string}, issuer: {type: string}, subject: {type: string, nullable: true}, email: {type: string, format: email, nullable: true}, display_name: {type: string}, role: {type: string, deprecated: true, description: Compatibility projection; use platform_admin and exam-admin memberships., enum: [student, admin]}, platform_admin: {type: boolean}, enabled: {type: boolean}, created_at: {type: string, format: date-time}, last_login_at: {type: string, format: date-time, nullable: true}}}
+    UserInput: {type: object, required: [email], properties: {email: {type: string, format: email}, display_name: {type: string}, platform_admin: {type: boolean}, role: {type: string, deprecated: true, enum: [student, admin]}}}
+    UserUpdate: {type: object, properties: {display_name: {type: string}, platform_admin: {type: boolean}, role: {type: string, deprecated: true, enum: [student, admin]}, enabled: {type: boolean}}}
+    ExamAdmin: {type: object, required: [user, enabled, created_at], properties: {user: {$ref: '#/components/schemas/User'}, enabled: {type: boolean}, created_at: {type: string, format: date-time}}}
     Participant: {type: object, required: [user, enabled], properties: {user: {$ref: '#/components/schemas/User'}, enabled: {type: boolean}}}
     ParticipantInput: {type: object, properties: {enabled: {type: boolean}}}
     UserAudit: {type: object, required: [id, actor_id, user_id, action, occurred_at], properties: {id: {type: integer}, actor_id: {type: string}, user_id: {type: string}, action: {type: string}, details: {type: string}, occurred_at: {type: string, format: date-time}}}
-    AuthMe: {type: object, required: [user, csrf_token], properties: {user: {$ref: '#/components/schemas/User'}, csrf_token: {type: string}}}
+    AuthMe: {type: object, required: [user, csrf_token, capabilities], properties: {user: {$ref: '#/components/schemas/User'}, csrf_token: {type: string}, capabilities: {type: object, required: [platform_admin, exam_admin], properties: {platform_admin: {type: boolean}, exam_admin: {type: boolean}}}}}
     Session: {type: object, required: [id, exam_id, subject, state, created_at], properties: {id: {type: string}, exam_id: {type: string}, subject: {type: string}, state: {type: string}, created_at: {type: string, format: date-time}, last_seen_at: {type: string, format: date-time}, violation_count: {type: integer}}}
     SessionAction: {type: object, required: [action], properties: {action: {type: string, enum: [suspend, resume]}}}
     Event: {type: object, required: [id, session_id, type, severity, occurred_at], properties: {id: {type: string}, session_id: {type: string}, attempt_id: {type: string}, browser_session_id: {type: string}, type: {type: string}, severity: {type: string}, details: {type: string}, occurred_at: {type: integer, format: int64}}}

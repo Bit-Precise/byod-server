@@ -58,7 +58,7 @@ func (s *Service) currentUser(r *http.Request) (User, string, error) {
 	if s.ExamStore == nil {
 		return User{}, "", errors.New("database_required")
 	}
-	u, err := scanUser(s.ExamStore.db.QueryRowContext(r.Context(), `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.enabled,u.created_at,u.last_login_at FROM byod_user_sessions s JOIN byod_users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.enabled AND u.issuer=$2`, digestToken(cookie.Value), s.identityIssuer()))
+	u, err := scanUser(s.ExamStore.db.QueryRowContext(r.Context(), `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at FROM byod_user_sessions s JOIN byod_users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.enabled AND u.issuer=$2`, digestToken(cookie.Value), s.identityIssuer()))
 	return u, cookie.Value, err
 }
 func (s *Service) validCSRF(r *http.Request, token string) bool {
@@ -70,8 +70,10 @@ func (s *Service) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bo
 		s.writeJSON(w, 401, map[string]string{"error": "login_required"})
 		return User{}, false
 	}
-	if u.Role != "admin" {
-		s.writeJSON(w, 403, map[string]string{"error": "admin_required"})
+	// The caller may additionally authorize an exam-admin membership. This
+	// helper remains the platform-wide guard for global user/audit APIs.
+	if !u.PlatformAdmin {
+		s.writeJSON(w, 403, map[string]string{"error": "platform_admin_required"})
 		return User{}, false
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.validCSRF(r, token) {
@@ -79,6 +81,34 @@ func (s *Service) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bo
 		return User{}, false
 	}
 	return u, true
+}
+
+// requireAdminAPI authenticates the web session and permits either a platform
+// administrator or an administrator explicitly assigned to the exam resource
+// in the URL. Global user/audit APIs remain platform-admin-only at their
+// handlers.
+func (s *Service) requireAdminAPI(w http.ResponseWriter, r *http.Request) (User, bool) {
+	u, token, err := s.currentUser(r)
+	if err != nil {
+		s.writeJSON(w, 401, map[string]string{"error": "login_required"})
+		return User{}, false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.validCSRF(r, token) {
+		s.writeJSON(w, 403, map[string]string{"error": "csrf_denied"})
+		return User{}, false
+	}
+	if u.PlatformAdmin {
+		return u, true
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) >= 4 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && s.ExamStore != nil {
+		allowed, checkErr := s.ExamStore.CanManageExam(r.Context(), parts[3], u.ID)
+		if checkErr == nil && allowed {
+			return u, true
+		}
+	}
+	s.writeJSON(w, 403, map[string]string{"error": "exam_admin_required"})
+	return User{}, false
 }
 func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	if s.ExamStore == nil || (s.OIDC == nil && !s.DevAuth) {
@@ -148,8 +178,10 @@ func (s *Service) finishUserLogin(w http.ResponseWriter, r *http.Request, state,
 		return true
 	}
 	s.setUserCookie(w, s.loginCookieName(), token, 43200)
-	if u.Role != "admin" {
-		destination = "/account/"
+	// All authenticated identities can land on the same control-center shell;
+	// the API applies platform/exam-admin capabilities per resource.
+	if destination == "" {
+		destination = "/admin/"
 	}
 	http.Redirect(w, r, destination, http.StatusSeeOther)
 	return true
@@ -172,7 +204,11 @@ func (s *Service) userAuthRoute(w http.ResponseWriter, r *http.Request) bool {
 		if err != nil {
 			s.writeJSON(w, 401, map[string]string{"error": "login_required"})
 		} else {
-			s.writeJSON(w, 200, map[string]any{"user": u, "csrf_token": s.csrfToken(token)})
+			examAdmin := false
+			if s.ExamStore != nil {
+				examAdmin, _ = s.ExamStore.HasExamAdmin(r.Context(), u.ID)
+			}
+			s.writeJSON(w, 200, map[string]any{"user": u, "csrf_token": s.csrfToken(token), "capabilities": map[string]bool{"platform_admin": u.PlatformAdmin, "exam_admin": examAdmin}})
 		}
 		return true
 	case "/auth/logout":
@@ -216,7 +252,7 @@ func (s *Service) userError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrIdentityConflict):
 		status, message = 409, "identity_conflict"
 	case errors.Is(err, ErrLastAdmin):
-		status, message = 409, "last_admin_required"
+		status, message = 409, "last_platform_admin_required"
 	case err.Error() == "invalid_email" || err.Error() == "invalid_user":
 		status, message = 400, err.Error()
 	case err.Error() == "email_exists":
@@ -248,18 +284,21 @@ func (s *Service) globalUserAPI(w http.ResponseWriter, r *http.Request, actor Us
 			}
 		case http.MethodPost:
 			var input struct {
-				Email       string `json:"email"`
-				DisplayName string `json:"display_name"`
-				Role        string `json:"role"`
+				Email         string `json:"email"`
+				DisplayName   string `json:"display_name"`
+				PlatformAdmin bool   `json:"platform_admin"`
+				// Role is accepted for one release for old clients; it is not
+				// persisted and does not make exam memberships exclusive.
+				Role string `json:"role"`
 			}
 			if decodeUserInput(r, &input) != nil {
 				s.writeJSON(w, 400, map[string]string{"error": "invalid_user"})
 				return true
 			}
-			if input.Role == "" {
-				input.Role = "student"
+			if input.Role == "admin" {
+				input.PlatformAdmin = true
 			}
-			u, err := s.ExamStore.InviteUser(r.Context(), s.identityIssuer(), input.Email, input.DisplayName, input.Role, actor.ID)
+			u, err := s.ExamStore.InviteUser(r.Context(), s.identityIssuer(), input.Email, input.DisplayName, input.PlatformAdmin, actor.ID)
 			if err != nil {
 				s.userError(w, err)
 			} else {
@@ -299,16 +338,21 @@ func (s *Service) globalUserAPI(w http.ResponseWriter, r *http.Request, actor Us
 			s.writeJSON(w, 200, u)
 		case http.MethodPatch:
 			var input struct {
-				Role        *string `json:"role"`
-				DisplayName *string `json:"display_name"`
-				Enabled     *bool   `json:"enabled"`
+				PlatformAdmin *bool   `json:"platform_admin"`
+				Role          *string `json:"role"`
+				DisplayName   *string `json:"display_name"`
+				Enabled       *bool   `json:"enabled"`
 			}
 			if decodeUserInput(r, &input) != nil {
 				s.writeJSON(w, 400, map[string]string{"error": "invalid_user"})
 				return true
 			}
+			platformAdmin := u.PlatformAdmin
+			if input.PlatformAdmin != nil {
+				platformAdmin = *input.PlatformAdmin
+			}
 			if input.Role != nil {
-				u.Role = *input.Role
+				platformAdmin = *input.Role == "admin"
 			}
 			if input.DisplayName != nil {
 				u.DisplayName = *input.DisplayName
@@ -316,7 +360,7 @@ func (s *Service) globalUserAPI(w http.ResponseWriter, r *http.Request, actor Us
 			if input.Enabled != nil {
 				u.Enabled = *input.Enabled
 			}
-			u, err = s.ExamStore.UpdateUser(r.Context(), u.ID, u.Role, u.DisplayName, u.Enabled, actor.ID)
+			u, err = s.ExamStore.UpdateUser(r.Context(), u.ID, platformAdmin, u.DisplayName, u.Enabled, actor.ID)
 			if err != nil {
 				s.userError(w, err)
 			} else {

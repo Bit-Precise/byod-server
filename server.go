@@ -949,7 +949,7 @@ func serveAdminUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireAdmin(w, r)
+	actor, ok := s.requireAdminAPI(w, r)
 	if !ok {
 		return
 	}
@@ -961,7 +961,13 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodGet {
-		exams, err := s.ExamStore.ListExams(r.Context())
+		var exams []StoredExam
+		var err error
+		if actor.PlatformAdmin {
+			exams, err = s.ExamStore.ListExams(r.Context())
+		} else {
+			exams, err = s.ExamStore.ListExamsForUser(r.Context(), actor.ID)
+		}
 		if err != nil {
 			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
 			return
@@ -970,6 +976,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodPost {
+		if !actor.PlatformAdmin {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "platform_admin_required"})
+			return
+		}
 		var input struct {
 			ID       string         `json:"id"`
 			ExamCode string         `json:"exam_code"`
@@ -995,6 +1005,51 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "admins" {
+		if r.Method == http.MethodGet {
+			admins, err := s.ExamStore.ListExamAdmins(r.Context(), parts[3])
+			if err != nil {
+				s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			} else {
+				s.writeJSON(w, http.StatusOK, admins)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if len(parts) == 6 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "admins" {
+		if !actor.PlatformAdmin {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "platform_admin_required"})
+			return
+		}
+		if r.Method == http.MethodPut {
+			var input struct {
+				Enabled bool `json:"enabled"`
+			}
+			input.Enabled = true
+			if decodeUserInput(r, &input) != nil {
+				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_admin"})
+				return
+			}
+			if err := s.ExamStore.SetExamAdmin(r.Context(), parts[3], parts[5], input.Enabled, actor.ID); err != nil {
+				s.userError(w, err)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := s.ExamStore.RemoveExamAdmin(r.Context(), parts[3], parts[5], actor.ID); err != nil {
+				s.userError(w, err)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "publish" && r.Method == http.MethodPost {
 		exam, ok, err := s.ExamStore.GetExam(r.Context(), parts[3])
 		if err != nil {
@@ -1026,6 +1081,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/admin/api/sessions" && r.Method == http.MethodGet {
+		if !actor.PlatformAdmin {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "platform_admin_required"})
+			return
+		}
 		if sessions, err := s.ExamStore.ListAllSessions(r.Context()); err == nil {
 			s.writeJSON(w, http.StatusOK, sessions)
 			return
@@ -1055,6 +1114,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodDelete {
+			if !actor.PlatformAdmin {
+				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "platform_admin_required"})
+				return
+			}
 			if err := s.ExamStore.DeleteExam(r.Context(), parts[3]); err != nil {
 				s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
 				return
@@ -1184,6 +1247,10 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/admin/api/events" && r.Method == http.MethodGet {
+		if !actor.PlatformAdmin {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "platform_admin_required"})
+			return
+		}
 		limit := 200
 		if raw := r.URL.Query().Get("limit"); raw != "" {
 			if n, err := strconv.Atoi(raw); err == nil {

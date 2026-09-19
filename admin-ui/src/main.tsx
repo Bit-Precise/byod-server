@@ -115,6 +115,7 @@ type Exam = components["schemas"]["Exam"];
 type Student = components["schemas"]["Student"];
 type Session = components["schemas"]["Session"];
 type Event = components["schemas"]["Event"];
+type ExamAdmin = components["schemas"]["ExamAdmin"];
 type Section = "overview" | "exams" | "users" | "students" | "sessions" | "audit";
 
 const navItems: { id: Section; label: string; icon: LucideIcon }[] = [
@@ -168,6 +169,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [exams, setExams] = useState<Exam[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
+  const [examAdmins, setExamAdmins] = useState<ExamAdmin[]>([]);
   const [users, setUsers] = useState<components["schemas"]["User"][]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
@@ -217,7 +219,7 @@ function App() {
   }, [loadEvents, loadExams, loadSessions, loadUsers]);
   useEffect(() => {
     void api.GET("/auth/me").then((result) => {
-      if (!result.error && result.data?.user.role === "admin") {
+      if (!result.error && (result.data?.capabilities.platform_admin || result.data?.capabilities.exam_admin)) {
         localStorage.setItem("byod.csrf_token", result.data.csrf_token);
         setUser(result.data.user as components["schemas"]["User"]);
         void refresh();
@@ -227,10 +229,11 @@ function App() {
   }, [refresh]);
   const loadStudents = useCallback(async (exam: Exam) => {
     setSelectedExam(exam);
-    const result = await api.GET("/admin/api/exams/{examId}/participants", {
+    const [result, adminsResult] = await Promise.all([api.GET("/admin/api/exams/{examId}/participants", {
       params: { path: { examId: exam.id } },
-    });
+    }), api.GET("/admin/api/exams/{examId}/admins", { params: { path: { examId: exam.id } } })]);
     if (!result.error) setStudents(((result.data || []) as components["schemas"]["Participant"][]).map((item) => ({subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled})));
+    if (!adminsResult.error) setExamAdmins((adminsResult.data || []) as ExamAdmin[]);
   }, []);
   const openSection = (next: Section) => {
     setSection(next);
@@ -425,6 +428,7 @@ function App() {
               exams={exams}
               selected={selectedExam}
               students={students}
+              examAdmins={examAdmins}
               users={users}
               onSelect={(exam) => void loadStudents(exam)}
               onAdd={() => setStudentDialogOpen(true)}
@@ -1084,6 +1088,7 @@ function StudentsPage({
   exams,
   selected,
   students,
+  examAdmins,
   users,
   onSelect,
   onAdd,
@@ -1092,6 +1097,7 @@ function StudentsPage({
   exams: Exam[];
   selected: Exam | null;
   students: Student[];
+  examAdmins: ExamAdmin[];
   users: components["schemas"]["User"][];
   onSelect: (exam: Exam) => void;
   onAdd: () => void;
@@ -1141,8 +1147,40 @@ function StudentsPage({
             )}
           </div>
         </CardHeader>
-        {selected ? (
-          <CardContent className="p-0">
+      {selected ? (
+          <CardContent className="space-y-6 p-0">
+            <div className="border-b border-slate-100 px-6 pt-5">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h3 className="font-medium text-slate-900">考试管理员</h3>
+                  <p className="text-xs text-slate-500">该能力只作用于当前考试，可与平台管理员和参加者身份叠加。</p>
+                </div>
+              </div>
+              <div className="mb-4 flex flex-wrap gap-2">
+                {examAdmins.map((admin) => (
+                  <Badge key={admin.user.id} variant="warning" className="gap-2 py-1">
+                    {admin.user.email || admin.user.display_name || admin.user.id}
+                    <button type="button" className="text-amber-900/70 hover:text-amber-950" onClick={() => void (async () => {
+                      const result = await api.DELETE("/admin/api/exams/{examId}/admins/{userId}", { params: { path: { examId: selected.id, userId: admin.user.id } } });
+                      if (result.error) toast.add({ title: "撤销考试管理员失败", type: "error" }); else onRefresh();
+                    })()} aria-label="撤销考试管理员">×</button>
+                  </Badge>
+                ))}
+                {!examAdmins.length && <span className="text-xs text-slate-400">尚未配置考试管理员</span>}
+              </div>
+              <div className="mb-5 flex max-w-xl gap-2">
+                <SelectField
+                  value=""
+                  placeholder="选择全局用户并授予考试管理员"
+                  options={users.filter((user) => !examAdmins.some((admin) => admin.user.id === user.id)).map((user) => ({ value: user.id, label: user.email || user.display_name || user.id }))}
+                  onValueChange={(userId) => void (async () => {
+                    if (!userId) return;
+                    const result = await api.PUT("/admin/api/exams/{examId}/admins/{userId}", { params: { path: { examId: selected.id, userId } }, body: { enabled: true } });
+                    if (result.error) toast.add({ title: "授予考试管理员失败", type: "error" }); else onRefresh();
+                  })()}
+                />
+              </div>
+            </div>
             <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-6 py-3 text-xs text-slate-500">
               <span>
                 {students.length
@@ -1200,28 +1238,28 @@ function StudentsPage({
 function UsersPage({users, onRefresh}: {users: components["schemas"]["User"][]; onRefresh: () => void}) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"student" | "admin">("student");
+  const [platformAdmin, setPlatformAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
   const invite = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true);
-    const result = await api.POST("/admin/api/users", {body: {email: email.trim(), display_name: name.trim(), role}});
+    const result = await api.POST("/admin/api/users", {body: {email: email.trim(), display_name: name.trim(), platform_admin: platformAdmin}});
     setSaving(false);
     if (result.error) { toast.add({title: "添加用户失败", description: "邮箱可能已经存在，或格式不正确。", type: "error"}); return; }
-    setEmail(""); setName(""); toast.add({title: "用户已加入全局用户库", type: "success"}); onRefresh();
+    setEmail(""); setName(""); setPlatformAdmin(false); toast.add({title: "用户已加入全局用户库", type: "success"}); onRefresh();
   };
-  const update = async (user: components["schemas"]["User"], patch: {enabled?: boolean; role?: "student"|"admin"}) => {
+  const update = async (user: components["schemas"]["User"], patch: {enabled?: boolean; platform_admin?: boolean}) => {
     const result = await api.PATCH("/admin/api/users/{userId}", {params: {path: {userId: user.id}}, body: patch});
     if (result.error) toast.add({title: "更新用户失败", type: "error"}); else onRefresh();
   };
   return <>
     <PageHeading title="全局用户管理" description="按邮箱预先建档；用户首次通过 Connect OIDC 登录后自动绑定 subject。" />
-    <Card className="mb-6"><CardHeader><CardTitle>预先添加用户</CardTitle><CardDescription>邮箱必须来自 OIDC 返回的已验证 email claim。</CardDescription></CardHeader><CardContent><form className="grid gap-3 sm:grid-cols-[1fr_1fr_160px_auto]" onSubmit={(e) => void invite(e)}>
+    <Card className="mb-6"><CardHeader><CardTitle>预先添加用户</CardTitle><CardDescription>邮箱必须来自 OIDC 返回的已验证 email claim。考试管理员在具体考试中单独配置，和平台管理员、普通用户身份可以叠加。</CardDescription></CardHeader><CardContent><form className="grid gap-3 sm:grid-cols-[1fr_1fr_auto_auto]" onSubmit={(e) => void invite(e)}>
       <Input type="email" required placeholder="student@example.edu.cn" value={email} onChange={e=>setEmail(e.target.value)} />
       <Input placeholder="显示名称（可选）" value={name} onChange={e=>setName(e.target.value)} />
-      <SelectField value={role} onValueChange={v=>setRole(v as "student"|"admin")} options={[{value:"student",label:"学生"},{value:"admin",label:"管理员"}]} />
+      <label className="flex items-center gap-2 rounded-md border px-3 text-sm"><input type="checkbox" checked={platformAdmin} onChange={e=>setPlatformAdmin(e.target.checked)} />平台管理员</label>
       <Button type="submit" disabled={saving}>{saving ? "添加中…" : "添加用户"}</Button>
     </form></CardContent></Card>
-    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>管理员账号可进入控制中心；停用用户会立即失效其管理会话和考试资格。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>角色</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="font-medium">{user.display_name || "未命名"}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.role === "admin" ? "warning" : "secondary"}>{user.role === "admin" ? "管理员" : "学生"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{role:user.role === "admin" ? "student" : "admin"})}>{user.role === "admin" ? "降为学生" : "设为管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={6} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>平台管理员是全局能力；考试管理员在每场考试单独配置；普通用户可以同时具备考试管理员或平台管理员能力。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>平台能力</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="font-medium">{user.display_name || "未命名"}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.platform_admin ? "warning" : "secondary"}>{user.platform_admin ? "平台管理员" : "普通用户"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{platform_admin:!user.platform_admin})}>{user.platform_admin ? "取消平台管理员" : "设为平台管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={6} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
   </>;
 }
 function StudentRow({
@@ -1848,7 +1886,7 @@ function StudentDialog({
             value={subject}
             onValueChange={setSubject}
             placeholder="选择全局用户（按邮箱）"
-            options={users.filter((user) => user.role === "student").map((user) => ({
+            options={users.map((user) => ({
               value: user.id,
               label: `${user.email || user.display_name || "未命名"}${user.subject ? "" : "（尚未登录）"}`,
             }))}

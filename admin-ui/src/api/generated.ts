@@ -228,6 +228,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/api/exams/{examId}/admins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["listExamAdmins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/exams/{examId}/admins/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["setExamAdmin"];
+        post?: never;
+        delete: operations["removeExamAdmin"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/api/user-audit": {
         parameters: {
             query?: never;
@@ -615,8 +652,13 @@ export interface components {
             /** Format: email */
             email?: string | null;
             display_name: string;
-            /** @enum {string} */
+            /**
+             * @deprecated
+             * @description Compatibility projection; use platform_admin and exam-admin memberships.
+             * @enum {string}
+             */
             role: "student" | "admin";
+            platform_admin: boolean;
             enabled: boolean;
             /** Format: date-time */
             created_at: string;
@@ -627,14 +669,28 @@ export interface components {
             /** Format: email */
             email: string;
             display_name?: string;
-            /** @enum {string} */
+            platform_admin?: boolean;
+            /**
+             * @deprecated
+             * @enum {string}
+             */
             role?: "student" | "admin";
         };
         UserUpdate: {
             display_name?: string;
-            /** @enum {string} */
+            platform_admin?: boolean;
+            /**
+             * @deprecated
+             * @enum {string}
+             */
             role?: "student" | "admin";
             enabled?: boolean;
+        };
+        ExamAdmin: {
+            user: components["schemas"]["User"];
+            enabled: boolean;
+            /** Format: date-time */
+            created_at: string;
         };
         Participant: {
             user: components["schemas"]["User"];
@@ -655,6 +711,10 @@ export interface components {
         AuthMe: {
             user: components["schemas"]["User"];
             csrf_token: string;
+            capabilities: {
+                platform_admin: boolean;
+                exam_admin: boolean;
+            };
         };
         Session: {
             id: string;
@@ -1134,6 +1194,74 @@ export interface operations {
         };
     };
     removeExamParticipant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listExamAdmins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exam administrators */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamAdmin"][];
+                };
+            };
+        };
+    };
+    setExamAdmin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ParticipantInput"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeExamAdmin: {
         parameters: {
             query?: never;
             header?: never;
