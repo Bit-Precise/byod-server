@@ -118,6 +118,89 @@ type Event = components["schemas"]["Event"];
 type ExamAdmin = components["schemas"]["ExamAdmin"];
 type Section = "overview" | "exams" | "users" | "students" | "sessions" | "audit";
 
+/**
+ * The admin UI deliberately uses the browser's History API instead of adding
+ * another router dependency.  The server serves index.html for every
+ * /admin/* path, so these URLs are also safe to bookmark and reload.
+ */
+type AdminRoute = {
+  section: Section;
+  examId?: string;
+  sessionId?: string;
+  modal?: "new-exam" | "edit-exam" | "add-student" | "session";
+};
+
+function parseRoute(pathname: string): AdminRoute {
+  const path = pathname.replace(/\/+$/, "").replace(/^\/admin\/?/, "");
+  const parts = path
+    .split("/")
+    .filter(Boolean)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
+
+  if (!parts.length) return { section: "overview" };
+  if (parts[0] === "exams") {
+    if (parts[1] === "new") return { section: "exams", modal: "new-exam" };
+    if (parts[1]) {
+      if (parts[2] === "edit") {
+        return { section: "exams", examId: parts[1], modal: "edit-exam" };
+      }
+      if (parts[2] === "participants") {
+        return {
+          section: "students",
+          examId: parts[1],
+          modal: parts[3] === "new" ? "add-student" : undefined,
+        };
+      }
+      return { section: "exams", examId: parts[1] };
+    }
+    return { section: "exams" };
+  }
+  if (parts[0] === "users") return { section: "users" };
+  if (parts[0] === "students") {
+    return parts[1]
+      ? { section: "students", examId: parts[1] }
+      : { section: "students" };
+  }
+  if (parts[0] === "sessions") {
+    return parts[1]
+      ? { section: "sessions", sessionId: parts[1], modal: "session" }
+      : { section: "sessions" };
+  }
+  if (parts[0] === "audit") return { section: "audit" };
+  return { section: "overview" };
+}
+
+function routePath(route: AdminRoute): string {
+  const encode = (value: string) => encodeURIComponent(value);
+  if (route.section === "overview") return "/admin/";
+  if (route.modal === "new-exam") return "/admin/exams/new";
+  if (route.section === "exams") {
+    if (route.examId && route.modal === "edit-exam") {
+      return `/admin/exams/${encode(route.examId)}/edit`;
+    }
+    if (route.examId) return `/admin/exams/${encode(route.examId)}`;
+    return "/admin/exams";
+  }
+  if (route.section === "students") {
+    if (route.examId && route.modal === "add-student") {
+      return `/admin/exams/${encode(route.examId)}/participants/new`;
+    }
+    if (route.examId) return `/admin/exams/${encode(route.examId)}/participants`;
+    return "/admin/students";
+  }
+  if (route.section === "sessions") {
+    if (route.sessionId) return `/admin/sessions/${encode(route.sessionId)}`;
+    return "/admin/sessions";
+  }
+  return `/admin/${route.section}`;
+}
+
 const navItems: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
   { id: "exams", label: "考试管理", icon: ClipboardList },
@@ -165,7 +248,9 @@ function StateBadge({ state }: { state: string }) {
 function App() {
   const [user, setUser] = useState<components["schemas"]["User"] | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [section, setSection] = useState<Section>("overview");
+  const [route, setRoute] = useState<AdminRoute>(() =>
+    parseRoute(window.location.pathname),
+  );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [exams, setExams] = useState<Exam[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -176,12 +261,30 @@ function App() {
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [sessionEvents, setSessionEvents] = useState<Event[]>([]);
-  const [examDialogOpen, setExamDialogOpen] = useState(false);
-  const [studentDialogOpen, setStudentDialogOpen] = useState(false);
   const [deleteExam, setDeleteExam] = useState<Exam | null>(null);
   const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const section = route.section;
+  const examDialogOpen =
+    route.modal === "new-exam" ||
+    (route.modal === "edit-exam" && editingExam !== null);
+  const studentDialogOpen = route.modal === "add-student" && selectedExam !== null;
+
+  const navigate = useCallback((next: AdminRoute, replace = false) => {
+    const nextPath = routePath(next);
+    if (window.location.pathname !== nextPath) {
+      window.history[replace ? "replaceState" : "pushState"]({}, "", nextPath);
+    }
+    setRoute(next);
+    setSidebarOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setRoute(parseRoute(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const loadExams = useCallback(async () => {
     const result = await api.GET("/admin/api/exams");
@@ -235,9 +338,46 @@ function App() {
     if (!result.error) setStudents(((result.data || []) as components["schemas"]["Participant"][]).map((item) => ({subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled})));
     if (!adminsResult.error) setExamAdmins((adminsResult.data || []) as ExamAdmin[]);
   }, []);
+  const openSession = useCallback(async (session: Session) => {
+    setSelectedSession(session);
+    const result = await api.GET("/admin/api/sessions/{sessionId}/events", {
+      params: { path: { sessionId: session.id } },
+    });
+    setSessionEvents(result.error ? [] : ((result.data || []) as Event[]));
+  }, []);
+  useEffect(() => {
+    const exam = route.examId
+      ? exams.find((item) => item.id === route.examId)
+      : undefined;
+    if (exam) {
+      setSelectedExam(exam);
+      if (route.modal === "edit-exam") setEditingExam(exam);
+      if (route.section === "students") void loadStudents(exam);
+    } else if (route.modal === "new-exam") {
+      setSelectedExam(null);
+      setEditingExam(null);
+    } else if (route.section !== "students" || !route.examId) {
+      setSelectedExam(null);
+    }
+    if (route.modal !== "edit-exam" && route.modal !== "new-exam") {
+      setEditingExam(null);
+    }
+  }, [exams, loadStudents, route]);
+
+  useEffect(() => {
+    if (route.modal === "session" && route.sessionId) {
+      const session = sessions.find((item) => item.id === route.sessionId);
+      if (session) void openSession(session);
+      return;
+    }
+    if (route.section !== "sessions") {
+      setSelectedSession(null);
+      setSessionEvents([]);
+    }
+  }, [openSession, route, sessions]);
+
   const openSection = (next: Section) => {
-    setSection(next);
-    setSidebarOpen(false);
+    navigate({ section: next });
     if (next === "sessions") void loadSessions();
     if (next === "audit") void loadEvents();
   };
@@ -272,13 +412,6 @@ function App() {
     toast.add({ title: "考试已发布", description: exam.id, type: "success" });
     await loadExams();
   };
-  const openSession = async (session: Session) => {
-    setSelectedSession(session);
-    const result = await api.GET("/admin/api/sessions/{sessionId}/events", {
-      params: { path: { sessionId: session.id } },
-    });
-    setSessionEvents(result.error ? [] : ((result.data || []) as Event[]));
-  };
   const updateSession = async (action: "suspend" | "resume") => {
     if (!selectedSession) return;
     const result = await api.POST("/admin/api/sessions/{sessionId}", {
@@ -301,7 +434,9 @@ function App() {
   if (!user)
     return (
       <LoginScreen
-        onLogin={() => { window.location.href = "/auth/login?return_to=/admin/"; }}
+        onLogin={() => {
+          window.location.href = `/auth/login?return_to=${encodeURIComponent(window.location.pathname)}`;
+        }}
       />
     );
   const activeSessions = sessions.filter(
@@ -392,34 +527,25 @@ function App() {
               activeSessions={activeSessions}
               loading={busy}
               onNavigate={openSection}
-              onNewExam={() => {
-                setEditingExam(null);
-                setExamDialogOpen(true);
-              }}
-              onOpenExam={(exam) => {
-                setEditingExam(exam);
-                setExamDialogOpen(true);
-              }}
+              onNewExam={() => navigate({ section: "exams", modal: "new-exam" })}
+              onOpenExam={(exam) =>
+                navigate({ section: "exams", examId: exam.id, modal: "edit-exam" })
+              }
             />
           )}
           {section === "exams" && (
             <ExamsPage
               exams={exams}
               selected={selectedExam}
-              onNew={() => {
-                setEditingExam(null);
-                setExamDialogOpen(true);
-              }}
-              onEdit={(exam) => {
-                setEditingExam(exam);
-                setExamDialogOpen(true);
-              }}
+              onNew={() => navigate({ section: "exams", modal: "new-exam" })}
+              onEdit={(exam) =>
+                navigate({ section: "exams", examId: exam.id, modal: "edit-exam" })
+              }
               onDelete={(exam) => setDeleteExam(exam)}
               onPublish={(exam) => void publishExam(exam)}
-              onStudents={(exam) => {
-                void loadStudents(exam);
-                openSection("students");
-              }}
+              onStudents={(exam) =>
+                navigate({ section: "students", examId: exam.id })
+              }
             />
           )}
           {section === "users" && <UsersPage users={users} onRefresh={() => void loadUsers()} />}
@@ -430,15 +556,26 @@ function App() {
               students={students}
               examAdmins={examAdmins}
               users={users}
-              onSelect={(exam) => void loadStudents(exam)}
-              onAdd={() => setStudentDialogOpen(true)}
+              onSelect={(exam) =>
+                navigate({ section: "students", examId: exam.id })
+              }
+              onAdd={() =>
+                selectedExam &&
+                navigate({
+                  section: "students",
+                  examId: selectedExam.id,
+                  modal: "add-student",
+                })
+              }
               onRefresh={() => selectedExam && void loadStudents(selectedExam)}
             />
           )}
           {section === "sessions" && (
             <SessionsPage
               sessions={sessions}
-              onOpen={(session) => void openSession(session)}
+              onOpen={(session) =>
+                navigate({ section: "sessions", sessionId: session.id, modal: "session" })
+              }
               onRefresh={() => void loadSessions()}
             />
           )}
@@ -450,9 +587,9 @@ function App() {
       <ExamDialog
         open={examDialogOpen}
         exam={editingExam}
-        onClose={() => setExamDialogOpen(false)}
+        onClose={() => navigate({ section: "exams" })}
         onSaved={() => {
-          setExamDialogOpen(false);
+          navigate({ section: "exams" });
           void loadExams();
         }}
       />
@@ -460,9 +597,17 @@ function App() {
         open={studentDialogOpen}
         exam={selectedExam}
         users={users}
-        onClose={() => setStudentDialogOpen(false)}
+        onClose={() =>
+          selectedExam
+            ? navigate({ section: "students", examId: selectedExam.id })
+            : navigate({ section: "students" })
+        }
         onSaved={() => {
-          setStudentDialogOpen(false);
+          if (selectedExam) {
+            navigate({ section: "students", examId: selectedExam.id });
+          } else {
+            navigate({ section: "students" });
+          }
           if (selectedExam) void loadStudents(selectedExam);
         }}
       />
@@ -472,6 +617,7 @@ function App() {
         onClose={() => {
           setSelectedSession(null);
           setSessionEvents([]);
+          navigate({ section: "sessions" });
         }}
         onAction={(action) => void updateSession(action)}
       />
