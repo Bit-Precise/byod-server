@@ -107,6 +107,12 @@ func (s *Service) requireAdminAPI(w http.ResponseWriter, r *http.Request) (User,
 			return u, true
 		}
 	}
+	if len(parts) >= 4 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "sessions" && s.ExamStore != nil {
+		allowed, checkErr := s.ExamStore.CanManageSession(r.Context(), parts[3], u.ID)
+		if checkErr == nil && allowed {
+			return u, true
+		}
+	}
 	s.writeJSON(w, 403, map[string]string{"error": "exam_admin_required"})
 	return User{}, false
 }

@@ -386,6 +386,12 @@ func (s *PostgresStore) CanManageExam(ctx context.Context, exam, userID string) 
 	return allowed, err
 }
 
+func (s *PostgresStore) CanManageSession(ctx context.Context, sessionID, userID string) (bool, error) {
+	var allowed bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_sessions s JOIN byod_users u ON u.id=$2 WHERE s.id=$1 AND u.enabled AND (u.platform_admin OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=s.exam_id AND a.user_id=u.id AND a.enabled)))`, sessionID, userID).Scan(&allowed)
+	return allowed, err
+}
+
 func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]StoredExam, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT e.exam_id,e.exam_code,e.base_url,e.state,e.starts_at,e.ends_at,e.policy_json,e.updated_at::text FROM byod_exams e WHERE EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$1 AND u.platform_admin) OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=e.exam_id AND a.user_id=$1 AND a.enabled) ORDER BY e.exam_id`, userID)
 	if err != nil {
