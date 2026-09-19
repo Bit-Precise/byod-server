@@ -425,6 +425,7 @@ function App() {
               exams={exams}
               selected={selectedExam}
               students={students}
+              users={users}
               onSelect={(exam) => void loadStudents(exam)}
               onAdd={() => setStudentDialogOpen(true)}
               onRefresh={() => selectedExam && void loadStudents(selectedExam)}
@@ -454,6 +455,7 @@ function App() {
       <StudentDialog
         open={studentDialogOpen}
         exam={selectedExam}
+        users={users}
         onClose={() => setStudentDialogOpen(false)}
         onSaved={() => {
           setStudentDialogOpen(false);
@@ -1082,6 +1084,7 @@ function StudentsPage({
   exams,
   selected,
   students,
+  users,
   onSelect,
   onAdd,
   onRefresh,
@@ -1089,6 +1092,7 @@ function StudentsPage({
   exams: Exam[];
   selected: Exam | null;
   students: Student[];
+  users: components["schemas"]["User"][];
   onSelect: (exam: Exam) => void;
   onAdd: () => void;
   onRefresh: () => void;
@@ -1116,7 +1120,7 @@ function StudentsPage({
               </CardTitle>
               <CardDescription>
                 {selected
-                  ? "只有启用的 subject 可以通过 OIDC 认证后进入考试。"
+                  ? "只有启用的全局用户可以通过 OIDC 认证后进入考试；尚未登录的邮箱用户也可以提前加入。"
                   : "请选择考试以查看和编辑学生名单。"}
               </CardDescription>
             </div>
@@ -1794,11 +1798,13 @@ function ExamDialog({
 function StudentDialog({
   open,
   exam,
+  users,
   onClose,
   onSaved,
 }: {
   open: boolean;
   exam: Exam | null;
+  users: components["schemas"]["User"][];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1838,11 +1844,14 @@ function StudentDialog({
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <div className="space-y-2">
           <Label htmlFor="student-subject">全局用户 ID</Label>
-          <Input
-            id="student-subject"
+          <SelectField
             value={subject}
-            onChange={(event) => setSubject(event.target.value)}
-            placeholder="从用户管理复制用户 ID"
+            onValueChange={setSubject}
+            placeholder="选择全局用户（按邮箱）"
+            options={users.filter((user) => user.role === "student").map((user) => ({
+              value: user.id,
+              label: `${user.email || user.display_name || "未命名"}${user.subject ? "" : "（尚未登录）"}`,
+            }))}
           />
           <p className="text-xs text-slate-500">
             先在“用户管理”按邮箱添加用户，再把用户 ID 加入考试名单。
