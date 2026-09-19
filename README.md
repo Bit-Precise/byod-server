@@ -127,7 +127,6 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | GET/POST | `/admin/api/exams` | 列出/创建考试 |
 | POST | `/admin/api/exams/{id}/publish` | 发布考试并根据时间窗口设置 scheduled/active |
 | GET/PATCH/DELETE | `/admin/api/exams/{id}` | 查看/编辑/删除考试及策略 |
-| GET/PUT/DELETE | `/admin/api/exams/{id}/participants/{user_id}` | 从全局用户目录管理考试参加资格 |
 | GET | `/admin/api/sessions` 或 `/admin/api/exams/{id}/sessions` | 查看在线作答 session |
 | GET/POST | `/admin/api/sessions/{id}` | 查看或暂停/恢复 session |
 | GET | `/admin/api/events` | 查询全局审计事件 |
