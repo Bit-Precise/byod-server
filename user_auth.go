@@ -43,7 +43,15 @@ func (s *Service) stateCookieName() string {
 	return "byod_login"
 }
 func (s *Service) setUserCookie(w http.ResponseWriter, name, value string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.ExamOrigin, "https://"), SameSite: http.SameSiteLaxMode, MaxAge: maxAge})
+	secure := strings.HasPrefix(s.ExamOrigin, "https://")
+	sameSite := http.SameSiteLaxMode
+	// The authenticated student page is grips://exam, which fetches the
+	// control plane cross-origin. A Secure SameSite=None user cookie is needed
+	// for that request; the short-lived OIDC state cookie remains Lax.
+	if name == s.loginCookieName() && secure {
+		sameSite = http.SameSiteNoneMode
+	}
+	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", HttpOnly: true, Secure: secure, SameSite: sameSite, MaxAge: maxAge})
 }
 func (s *Service) csrfToken(token string) string {
 	h := hmac.New(sha256.New, s.PolicySecret)
@@ -125,7 +133,8 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	requestedDestination := r.URL.Query().Get("return_to")
 	// Preserve a bookmarked admin page across OIDC, but never accept an
 	// absolute or protocol-relative URL as a post-login destination.
-	if requestedDestination == "/account/" ||
+	if requestedDestination == "grips://exam/?auth=1" ||
+		requestedDestination == "/account/" ||
 		(strings.HasPrefix(requestedDestination, "/admin/") &&
 			!strings.Contains(requestedDestination, "://")) {
 		destination = requestedDestination

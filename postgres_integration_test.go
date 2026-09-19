@@ -64,6 +64,21 @@ func TestPostgresExamLifecycle(t *testing.T) {
 	if start.Code != http.StatusOK {
 		t.Fatalf("start: %d %s", start.Code, start.Body.String())
 	}
+	// A fresh Service has an empty in-memory session map. The browser token
+	// must still authorize the durable session after a process restart.
+	restarted, err := NewService("https://exam.cs.ac.cn", "https://source.example", []byte("integration-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.DevAuth = true
+	restarted.ExamStore = store
+	restored := httptest.NewRecorder()
+	restoredRequest := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+session["session_id"], nil)
+	restoredRequest.Header.Set("Authorization", "Bearer "+session["browser_token"])
+	restarted.ServeHTTP(restored, restoredRequest)
+	if restored.Code != http.StatusOK {
+		t.Fatalf("restored session: %d %s", restored.Code, restored.Body.String())
+	}
 	complete := httptest.NewRecorder()
 	completeRequest := httptest.NewRequest(http.MethodPost, "/v1/exams/"+examID+"/complete", nil)
 	completeRequest.Header.Set("Authorization", "Bearer "+session["browser_token"])

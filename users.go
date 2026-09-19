@@ -411,6 +411,23 @@ func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID string) ([]AvailableExam, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.exam_id,e.base_url,e.state,e.starts_at,e.ends_at,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=e.exam_id AND c.subject=COALESCE(u.subject,'')) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id JOIN byod_exams e ON e.exam_id=p.exam_id WHERE p.user_id=$1 AND p.enabled AND u.enabled ORDER BY COALESCE(e.starts_at,e.updated_at),e.exam_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AvailableExam
+	for rows.Next() {
+		var exam AvailableExam
+		if err := rows.Scan(&exam.ID, &exam.BaseURL, &exam.State, &exam.StartsAt, &exam.EndsAt, &exam.Completed); err != nil {
+			return nil, err
+		}
+		out = append(out, exam)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) SetExamAdmin(ctx context.Context, exam, userID string, enabled bool, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

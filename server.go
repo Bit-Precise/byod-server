@@ -503,10 +503,30 @@ func validExamID(id string) bool {
 }
 
 func (s *Service) findByToken(token string) *Session {
+	if token == "" {
+		return nil
+	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, session := range s.sessions {
 		if hmac.Equal([]byte(session.BrowserToken), []byte(token)) {
+			s.mu.RUnlock()
+			return session
+		}
+	}
+	s.mu.RUnlock()
+	// A server restart clears the in-memory session map. Restore the session
+	// from its token digest so an otherwise valid browser can continue without
+	// re-authenticating. Historical rows created before token persistence are
+	// intentionally not recoverable and will follow the stale-session path.
+	if s.ExamStore != nil {
+		if session, err := s.ExamStore.FindSessionByToken(context.Background(), token); err == nil && session != nil {
+			s.mu.Lock()
+			if existing := s.sessions[session.ID]; existing != nil {
+				s.mu.Unlock()
+				return existing
+			}
+			s.sessions[session.ID] = session
+			s.mu.Unlock()
 			return session
 		}
 	}
@@ -514,11 +534,27 @@ func (s *Service) findByToken(token string) *Session {
 }
 
 func (s *Service) authorize(token, id string) *Session {
+	if token == "" || id == "" {
+		return nil
+	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	session := s.sessions[id]
 	if session != nil && hmac.Equal([]byte(session.BrowserToken), []byte(token)) {
+		s.mu.RUnlock()
 		return session
+	}
+	s.mu.RUnlock()
+	if s.ExamStore != nil {
+		if restored, err := s.ExamStore.GetSessionByToken(context.Background(), id, token); err == nil && restored != nil {
+			s.mu.Lock()
+			if existing := s.sessions[id]; existing != nil {
+				s.mu.Unlock()
+				return existing
+			}
+			s.sessions[id] = restored
+			s.mu.Unlock()
+			return restored
+		}
 	}
 	return nil
 }
@@ -609,13 +645,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	response := &requestLogWriter{ResponseWriter: w, status: http.StatusOK}
 	defer logHTTPRequest(r, response, started)
 	w = response
-	if s.userAuthRoute(w, r) {
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
-		s.adminAPI(w, r)
-		return
-	}
 	// grips://exam is a trusted Chromium WebUI origin, but it is still
 	// cross-origin from the HTTPS exam endpoint.  Explicit CORS headers are
 	// therefore required for the browser-side session bootstrap.
@@ -626,6 +655,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 		w.Header().Add("Vary", "Origin")
+	}
+	if s.userAuthRoute(w, r) {
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		s.adminAPI(w, r)
+		return
 	}
 	if r.Method == http.MethodOptions {
 		if r.Header.Get("Origin") != "grips://exam" {
@@ -690,6 +726,24 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/browser/login" {
 		s.beginBrowserLogin(w, r)
+		return
+	}
+	if r.URL.Path == "/v1/exams/available" {
+		u, _, err := s.currentUser(r)
+		if err != nil {
+			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login_required"})
+			return
+		}
+		if s.ExamStore == nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "database_required"})
+			return
+		}
+		exams, err := s.ExamStore.ListAvailableExamsForUser(r.Context(), u.ID)
+		if err != nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "exam_list_unavailable"})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, exams)
 		return
 	}
 	if r.URL.Path == "/v1/exam-entry" {
@@ -1382,6 +1436,24 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			s.writeExamError(w, err)
 			return
 		}
+		// A student who already completed the Connect login does not need a
+		// second OIDC round-trip for every exam. The user session cookie is
+		// bound to the OIDC identity and the participant roster is checked before
+		// issuing an authenticated exam session.
+		authenticatedSubject := ""
+		if s.ExamStore != nil {
+			if user, _, userErr := s.currentUser(r); userErr == nil {
+				if user.Subject == nil || strings.TrimSpace(*user.Subject) == "" {
+					s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identity_not_bound"})
+					return
+				}
+				authenticatedSubject = *user.Subject
+				if eligibilityErr := s.checkStudentEligibility(r.Context(), input.ExamID, authenticatedSubject); eligibilityErr != nil {
+					s.writeExamError(w, eligibilityErr)
+					return
+				}
+			}
+		}
 		if input.ReturnURI != "" {
 			returnURL, err := url.Parse(input.ReturnURI)
 			if err != nil || returnURL.Scheme != "grips" || returnURL.Host != "exam" {
@@ -1390,7 +1462,11 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		now := time.Now().Unix()
-		session := &Session{ID: randomToken(18), AttemptID: randomToken(18), BrowserSessionID: randomToken(18), BrowserToken: randomToken(32), ExamID: input.ExamID, State: "pending", CreatedAt: now, LastSeenAt: now, ReturnURI: input.ReturnURI}
+		state := "pending"
+		if authenticatedSubject != "" {
+			state = "authenticated"
+		}
+		session := &Session{ID: randomToken(18), AttemptID: randomToken(18), BrowserSessionID: randomToken(18), BrowserToken: randomToken(32), ExamID: input.ExamID, Subject: authenticatedSubject, State: state, CreatedAt: now, LastSeenAt: now, ReturnURI: input.ReturnURI}
 		s.mu.Lock()
 		if _, exists := s.exams[input.ExamID]; !exists {
 			code, _ := newExamCode()
@@ -1401,11 +1477,18 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			_ = s.ExamStore.SaveSession(r.Context(), session)
 		}
 		s.appendEvent(session, "attempt_created", "info", "")
+		if authenticatedSubject != "" {
+			s.appendEvent(session, "authentication_succeeded", "info", "existing_user_session")
+		}
 		s.mu.Unlock()
 		session.CodeVerifier = pkceVerifier()
 		http.SetCookie(w, &http.Cookie{Name: "byod_session", Value: session.BrowserToken, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.ExamOrigin, "https://"), SameSite: http.SameSiteStrictMode})
+		authorizationURL := ""
+		if state == "pending" {
+			authorizationURL = s.authorizationURL(session)
+		}
 		s.writeJSON(w, http.StatusCreated, map[string]string{"session_id": session.ID, "attempt_id": session.AttemptID, "browser_session_id": session.BrowserSessionID, "browser_token": session.BrowserToken,
-			"authorization_url": s.authorizationURL(session), "state": session.State})
+			"authorization_url": authorizationURL, "state": session.State})
 		// Headers must be set before writeJSON writes the status; this cookie is
 		// also useful when the student follows the public /<exam>/end link.
 		return

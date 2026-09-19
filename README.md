@@ -146,8 +146,8 @@ Web 页面来源不会被允许调用会话接口。
 
 ## 联调流程
 
-1. 浏览器把 `https://exam.cs.ac.cn/course-101` 解析为考试 ID，并请求 `.well-known` 配置。
-2. 浏览器 `POST /v1/sessions`，在当前标签页打开返回的 `authorization_url`。
-3. OIDC 回调落到中台；中台验证 `state`、交换 code，并将会话标记为 `authenticated`。
-4. 浏览器轮询会话状态，校验策略签名后 `POST /start`，调用 tunnel-ticket API，并将 `source_origin` 的 HTTPS 请求通过 L4 tunnel 转发；服务端不会终止或修改源站 TLS。
-5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /v1/sessions/{id}/end`；服务端立即撤销代理凭证，浏览器清理本地限制状态。
+1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
+2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试；学生不再输入考试码。
+3. 学生选择考试后，浏览器 `POST /v1/sessions` 创建已认证的作答 session。
+4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_origin` 的 HTTPS 请求通过 L4 tunnel 转发；服务端不会终止或修改源站 TLS。
+5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

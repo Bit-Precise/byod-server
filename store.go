@@ -28,19 +28,46 @@ type StoredExam struct {
 	Policy    map[string]any `json:"policy,omitempty"`
 	UpdatedAt string         `json:"updated_at,omitempty"`
 }
+
+// AvailableExam is the student-facing projection. Exam codes remain an
+// administrator/instructor concept; students select an exam after OIDC based
+// on their durable participant assignment.
+type AvailableExam struct {
+	ID        string     `json:"id"`
+	BaseURL   string     `json:"base_url"`
+	State     string     `json:"state"`
+	StartsAt  *time.Time `json:"starts_at,omitempty"`
+	EndsAt    *time.Time `json:"ends_at,omitempty"`
+	Completed bool       `json:"completed"`
+}
 type StoredStudent struct {
 	Subject     string `json:"subject"`
 	DisplayName string `json:"display_name"`
 	Enabled     bool   `json:"enabled"`
 }
 type StoredSession struct {
-	ID             string    `json:"id"`
-	ExamID         string    `json:"exam_id"`
-	Subject        string    `json:"subject"`
-	State          string    `json:"state"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastSeenAt     time.Time `json:"last_seen_at"`
-	ViolationCount int       `json:"violation_count"`
+	ID               string    `json:"id"`
+	ExamID           string    `json:"exam_id"`
+	AttemptID        string    `json:"-"`
+	BrowserSessionID string    `json:"-"`
+	Subject          string    `json:"subject"`
+	State            string    `json:"state"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
+	ViolationCount   int       `json:"violation_count"`
+}
+
+// sessionFromStored converts the durable representation into the in-memory
+// protocol representation. BrowserToken is deliberately supplied by the
+// caller and is never read back from PostgreSQL: only its SHA-256 digest is
+// persisted.
+func sessionFromStored(x StoredSession, browserToken string) *Session {
+	return &Session{
+		ID: x.ID, AttemptID: x.AttemptID, BrowserSessionID: x.BrowserSessionID,
+		ExamID: x.ExamID, Subject: x.Subject, State: x.State,
+		CreatedAt: x.CreatedAt.Unix(), LastSeenAt: x.LastSeenAt.Unix(),
+		ViolationCount: x.ViolationCount, BrowserToken: browserToken,
+	}
 }
 
 type StoredTunnelTicket struct {
@@ -82,6 +109,8 @@ CREATE TABLE IF NOT EXISTS byod_sessions(id TEXT PRIMARY KEY,exam_id TEXT NOT NU
 CREATE TABLE IF NOT EXISTS byod_events(id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES byod_sessions(id) ON DELETE CASCADE,attempt_id TEXT NOT NULL DEFAULT '',browser_session_id TEXT NOT NULL DEFAULT '',type TEXT NOT NULL,severity TEXT NOT NULL,details TEXT NOT NULL DEFAULT '',occurred_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS byod_tunnel_tickets(ticket_hash BYTEA PRIMARY KEY,session_id TEXT NOT NULL REFERENCES byod_sessions(id) ON DELETE CASCADE,exam_id TEXT NOT NULL,endpoint_id TEXT NOT NULL,expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS byod_sessions_exam_created_idx ON byod_sessions(exam_id,created_at DESC);
+ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS browser_token_hash BYTEA NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS byod_sessions_token_hash_idx ON byod_sessions(browser_token_hash);
 CREATE INDEX IF NOT EXISTS byod_events_session_occurred_idx ON byod_events(session_id,occurred_at);
 CREATE INDEX IF NOT EXISTS byod_tunnel_tickets_session_idx ON byod_tunnel_tickets(session_id,expires_at);
 ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS exam_code CHAR(8);ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'draft';ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';
@@ -414,8 +443,44 @@ func (s *PostgresStore) Policy(ctx context.Context, id string) (map[string]any, 
 	return result, nil
 }
 func (s *PostgresStore) SaveSession(ctx context.Context, x *Session) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count`, x.ID, x.ExamID, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount)
+	// Some administrative/state transitions construct a Session without the
+	// browser token. Keep the existing digest in that case rather than
+	// replacing it with the digest of an empty string.
+	tokenHash := []byte{}
+	if x.BrowserToken != "" {
+		tokenHash = digestToken(x.BrowserToken)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count,browser_token_hash)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9,$10)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count,browser_token_hash=CASE WHEN length(EXCLUDED.browser_token_hash)>0 THEN EXCLUDED.browser_token_hash ELSE byod_sessions.browser_token_hash END`, x.ID, x.ExamID, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount, tokenHash)
 	return err
+}
+
+// GetSessionByToken restores a session after a process restart. The token is
+// compared against a digest in PostgreSQL; the clear-text credential never
+// leaves the request handler and is not stored by the server.
+func (s *PostgresStore) GetSessionByToken(ctx context.Context, id, browserToken string) (*Session, error) {
+	if id == "" || browserToken == "" {
+		return nil, sql.ErrNoRows
+	}
+	var x StoredSession
+	err := s.db.QueryRowContext(ctx, `SELECT id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count FROM byod_sessions WHERE id=$1 AND browser_token_hash=$2`, id, digestToken(browserToken)).Scan(&x.ID, &x.ExamID, &x.AttemptID, &x.BrowserSessionID, &x.Subject, &x.State, &x.CreatedAt, &x.LastSeenAt, &x.ViolationCount)
+	if err != nil {
+		return nil, err
+	}
+	return sessionFromStored(x, browserToken), nil
+}
+
+// FindSessionByToken is used by the proxy/endpoints that identify a session
+// only through the browser credential cookie.
+func (s *PostgresStore) FindSessionByToken(ctx context.Context, browserToken string) (*Session, error) {
+	if browserToken == "" {
+		return nil, sql.ErrNoRows
+	}
+	var x StoredSession
+	err := s.db.QueryRowContext(ctx, `SELECT id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count FROM byod_sessions WHERE browser_token_hash=$1 ORDER BY created_at DESC LIMIT 1`, digestToken(browserToken)).Scan(&x.ID, &x.ExamID, &x.AttemptID, &x.BrowserSessionID, &x.Subject, &x.State, &x.CreatedAt, &x.LastSeenAt, &x.ViolationCount)
+	if err != nil {
+		return nil, err
+	}
+	return sessionFromStored(x, browserToken), nil
 }
 func (s *PostgresStore) SaveEvent(ctx context.Context, x ExamEvent) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_events(id,session_id,attempt_id,browser_session_id,type,severity,details,occurred_at)VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8))ON CONFLICT(id)DO NOTHING`, x.ID, x.SessionID, x.AttemptID, x.BrowserSessionID, x.Type, x.Severity, x.Details, x.OccurredAt)

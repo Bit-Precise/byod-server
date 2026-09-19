@@ -401,6 +401,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/exams/available": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAvailableExams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -606,6 +622,18 @@ export interface components {
             ends_at?: string | null;
             /** Format: uri */
             base_url?: string;
+        };
+        AvailableExam: {
+            id: string;
+            /** Format: uri */
+            base_url: string;
+            /** @enum {string} */
+            state: "draft" | "scheduled" | "active" | "ended";
+            /** Format: date-time */
+            starts_at?: string | null;
+            /** Format: date-time */
+            ends_at?: string | null;
+            completed: boolean;
         };
         SessionInput: {
             exam_id: string;
@@ -1496,6 +1524,33 @@ export interface operations {
             };
             /** @description Exam ended */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAvailableExams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exams assigned to the authenticated student */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailableExam"][];
+                };
+            };
+            /** @description Login required */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
