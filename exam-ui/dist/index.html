@@ -1,0 +1,49 @@
+<!doctype html>
+<html dir="ltr" lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BYOD Exam</title>
+    <link rel="stylesheet" href="/exam-assets/style.css">
+  </head>
+  <body>
+    <main class="exam-card">
+      <div class="header-row">
+        <div class="brand">BYOD Browser</div>
+        <span class="badge">Exam bootstrap</span>
+      </div>
+      <h1 id="title">Preparing exam session</h1>
+      <p id="message" class="muted">
+        Sign in with Connect to see the exams assigned to you.
+      </p>
+      <section id="entry-section" class="target-panel">
+        <span class="label">Student sign-in</span>
+        <button id="login" type="button">Sign in with Connect</button>
+        <div id="exam-list" class="exam-list" hidden></div>
+        <p id="entry-error" class="field-error" hidden></p>
+      </section>
+      <section id="target-section" class="target-panel" hidden>
+        <span class="label">Verified HTTPS target</span>
+        <code id="target"></code>
+      </section>
+      <section id="schedule-section" class="target-panel" hidden>
+        <span class="label">Exam schedule</span>
+        <p id="schedule"></p>
+        <p id="countdown" class="countdown"></p>
+      </section>
+      <section id="error" class="error" hidden>
+        Open <code>grips://exam.cs.ac.cn</code> and sign in with Connect to
+        choose an exam assigned to your account.
+      </section>
+      <div class="actions">
+        <button id="launch" type="button" hidden>Open exam</button>
+        <button id="end" type="button" hidden>Submit exam</button>
+      </div>
+      <div class="status-row">
+        <span class="status-dot"></span>
+        <span id="status">Waiting for exam services</span>
+      </div>
+    </main>
+    <script type="module" src="/exam-assets/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(() => {
+  const parentOrigin = 'https://exam.cs.ac.cn';
+  const allowedMessages = new Set([
+    'setByodTunnelConfig',
+    'clearByodTunnelConfig',
+    'setByodFullscreen',
+  ]);
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.origin !== parentOrigin)
+      return;
+    const message = event.data;
+    if (!message || message.channel !== 'byod-browser' ||
+        !allowedMessages.has(message.name)) return;
+    if (window.chrome && typeof window.chrome.send === 'function')
+      window.chrome.send(message.name, message.args || []);
+  });
+  window.parent.postMessage({channel: 'byod-browser', type: 'ready'}, parentOrigin);
+})();
+</script>

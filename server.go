@@ -37,6 +37,13 @@ var _ = admincontract.OpenAPISpecSHA256
 //go:embed admin-ui/dist
 var adminUIDist embed.FS
 
+// The student exam shell is served from the BYOD server origin.  It is kept
+// out of Chromium so the UI and API flow can be updated by deploying the
+// server image, without rebuilding or reinstalling the browser.
+//
+//go:embed exam-ui/dist
+var examUIDist embed.FS
+
 type Session struct {
 	ID               string
 	AttemptID        string
@@ -488,6 +495,34 @@ func tokenFromRequest(r *http.Request) string {
 	return ""
 }
 
+// validSessionReturnURI accepts both the legacy grips:// control document and
+// the server-hosted HTTPS exam shell. The HTTPS form is same-origin and may
+// carry a target exam path, but it can never point to another host.
+func (s *Service) validSessionReturnURI(returnURL *url.URL, examID string) bool {
+	if returnURL == nil || examID == "" {
+		return false
+	}
+	if returnURL.Scheme == "grips" && returnURL.Host == "exam" {
+		return returnURL.User == nil && returnURL.Fragment == ""
+	}
+	origin, err := url.Parse(s.ExamOrigin)
+	if err != nil || returnURL.Scheme != origin.Scheme || returnURL.Host != origin.Host ||
+		returnURL.User != nil || returnURL.Fragment != "" ||
+		returnURL.Path != "" && returnURL.Path != "/" {
+		return false
+	}
+	target := returnURL.Query().Get("target")
+	if target == "" {
+		return true
+	}
+	targetURL, err := url.Parse(target)
+	if err != nil || targetURL.Scheme != origin.Scheme || targetURL.Host != origin.Host ||
+		targetURL.User != nil || targetURL.Fragment != "" {
+		return false
+	}
+	return targetURL.Path == "/"+examID || strings.HasPrefix(targetURL.Path, "/"+examID+"/")
+}
+
 func validExamID(id string) bool {
 	if id == "" || id == "." || id == ".." || len(id) > 128 {
 		return false
@@ -695,6 +730,14 @@ func examIDFromWellKnown(requestPath string) string {
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" || r.URL.Path == "/exam" || r.URL.Path == "/exam/" {
+		serveExamUI(w, r, "index.html")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/exam-assets/") {
+		serveExamUI(w, r, strings.TrimPrefix(r.URL.Path, "/exam-assets/"))
+		return
+	}
 	if r.URL.Path == "/account" || strings.HasPrefix(r.URL.Path, "/account/") {
 		r.URL.Path = "/admin/"
 		serveAdminUI(w, r)
@@ -862,14 +905,18 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		if returnURI != "" {
 			redirect, err := url.Parse(returnURI)
-			if err != nil || redirect.Scheme != "grips" || redirect.Host != "exam" {
+			if err != nil || !s.validSessionReturnURI(redirect, examID) {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_return_uri"})
 				return
 			}
 			target := redirect.Query().Get("target")
 			if target == "" {
-				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_return_target"})
-				return
+				if redirect.Scheme == "https" {
+					target = strings.TrimRight(s.ExamOrigin, "/") + "/" + examID
+				} else {
+					s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_return_target"})
+					return
+				}
 			}
 			targetURL, targetErr := url.Parse(target)
 			examOrigin, _ := url.Parse(s.ExamOrigin)
@@ -952,7 +999,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
-			http.Redirect(w, r, "grips://exam/?ended=1", http.StatusSeeOther)
+			http.Redirect(w, r, s.ExamOrigin+"/?ended=1", http.StatusSeeOther)
 			return
 		}
 		s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": "ended"})
@@ -1010,6 +1057,22 @@ func serveAdminUI(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	http.ServeFileFS(w, r, adminUIDist, "admin-ui/dist/"+name)
+}
+
+func serveExamUI(w http.ResponseWriter, r *http.Request, name string) {
+	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "\\") {
+		name = "index.html"
+	}
+	if name == "index.html" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	}
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; base-uri 'none'; object-src 'none'; "+
+			"frame-ancestors grips://exam.cs.ac.cn; connect-src 'self'; script-src 'self'; "+
+			"style-src 'self' 'unsafe-inline'; img-src 'self' data:;")
+	http.ServeFileFS(w, r, examUIDist, "exam-ui/dist/"+name)
 }
 
 func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
@@ -1356,7 +1419,7 @@ func (s *Service) completeExamRequest(w http.ResponseWriter, r *http.Request, ex
 	}
 	http.SetCookie(w, &http.Cookie{Name: "byod_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.ExamOrigin, "https://"), SameSite: http.SameSiteStrictMode})
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
-		http.Redirect(w, r, "grips://exam/?ended=1", http.StatusSeeOther)
+		http.Redirect(w, r, s.ExamOrigin+"/?ended=1", http.StatusSeeOther)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "exam_id": examID, "state": "ended"})
@@ -1418,7 +1481,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.ReturnURI != "" {
 			returnURL, err := url.Parse(input.ReturnURI)
-			if err != nil || returnURL.Scheme != "grips" || returnURL.Host != "exam" {
+			if err != nil || !s.validSessionReturnURI(returnURL, input.ExamID) {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_return_uri"})
 				return
 			}

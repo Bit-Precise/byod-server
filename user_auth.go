@@ -45,9 +45,9 @@ func (s *Service) stateCookieName() string {
 func (s *Service) setUserCookie(w http.ResponseWriter, name, value string, maxAge int) {
 	secure := strings.HasPrefix(s.ExamOrigin, "https://")
 	sameSite := http.SameSiteLaxMode
-	// The authenticated student page is grips://exam, which fetches the
-	// control plane cross-origin. A Secure SameSite=None user cookie is needed
-	// for that request; the short-lived OIDC state cookie remains Lax.
+	// The authenticated student page is served by the HTTPS exam origin. Keep
+	// the user session cookie usable by same-origin API calls; SameSite=None is
+	// retained for compatibility with older grips:// clients.
 	if name == s.loginCookieName() && secure {
 		sameSite = http.SameSiteNoneMode
 	}
@@ -134,6 +134,7 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	// Preserve a bookmarked admin page across OIDC, but never accept an
 	// absolute or protocol-relative URL as a post-login destination.
 	if requestedDestination == "grips://exam/?auth=1" ||
+		s.isExamUIReturnURI(requestedDestination) ||
 		requestedDestination == "/account/" ||
 		(strings.HasPrefix(requestedDestination, "/admin/") &&
 			!strings.Contains(requestedDestination, "://")) {
@@ -159,6 +160,21 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *Service) isExamUIReturnURI(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	target, err := url.Parse(raw)
+	origin, originErr := url.Parse(s.ExamOrigin)
+	if err != nil || originErr != nil || target.Scheme != origin.Scheme ||
+		target.Host != origin.Host || target.User != nil || target.Fragment != "" ||
+		target.Path != "" && target.Path != "/" {
+		return false
+	}
+	query := target.Query()
+	return query.Get("auth") == "1" && len(query) == 1
 }
 func (s *Service) finishUserLogin(w http.ResponseWriter, r *http.Request, state, code string) bool {
 	if !strings.HasPrefix(state, "user-") {
