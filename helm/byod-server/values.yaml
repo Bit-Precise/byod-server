@@ -28,6 +28,7 @@ oidc:
   existingSecret: ""
   clientSecretKey: client-secret
 adminEmails: ""
+# Comma-separated verified OIDC email addresses that bootstrap as administrators.
 database:
   existingSecret: ""
   urlKey: database-url
