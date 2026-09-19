@@ -122,8 +122,13 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destination := "/admin/"
-	if r.URL.Query().Get("return_to") == "/account/" {
-		destination = "/account/"
+	requestedDestination := r.URL.Query().Get("return_to")
+	// Preserve a bookmarked admin page across OIDC, but never accept an
+	// absolute or protocol-relative URL as a post-login destination.
+	if requestedDestination == "/account/" ||
+		(strings.HasPrefix(requestedDestination, "/admin/") &&
+			!strings.Contains(requestedDestination, "://")) {
+		destination = requestedDestination
 	}
 	state, binding, verifier, nonce := "user-"+randomToken(24), randomToken(32), pkceVerifier(), randomToken(24)
 	_, err := s.ExamStore.db.ExecContext(r.Context(), `DELETE FROM byod_login_states WHERE expires_at<now()`)

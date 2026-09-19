@@ -116,7 +116,7 @@ type Student = components["schemas"]["Student"];
 type Session = components["schemas"]["Session"];
 type Event = components["schemas"]["Event"];
 type ExamAdmin = components["schemas"]["ExamAdmin"];
-type Section = "overview" | "exams" | "users" | "students" | "sessions" | "audit";
+type Section = "overview" | "exams" | "users" | "students" | "sessions" | "audit" | "not-found";
 
 /**
  * The admin UI deliberately uses the browser's History API instead of adding
@@ -131,49 +131,43 @@ type AdminRoute = {
 };
 
 function parseRoute(pathname: string): AdminRoute {
-  const path = pathname.replace(/\/+$/, "").replace(/^\/admin\/?/, "");
-  const parts = path
-    .split("/")
-    .filter(Boolean)
-    .map((part) => {
-      try {
-        return decodeURIComponent(part);
-      } catch {
-        return part;
-      }
-    });
-
-  if (!parts.length) return { section: "overview" };
+  if (pathname === "/account/" || pathname === "/admin" || pathname === "/admin/") {
+    return { section: "overview" };
+  }
+  if (!pathname.startsWith("/admin/")) return { section: "not-found" };
+  let parts: string[];
+  try {
+    parts = pathname.slice("/admin/".length).replace(/\/$/, "").split("/").map(decodeURIComponent);
+  } catch {
+    return { section: "not-found" };
+  }
+  if (parts.some((part) => !part || /[/\\\x00-\x20]/.test(part) || part === "." || part === "..")) {
+    return { section: "not-found" };
+  }
+  if (parts.length === 1) {
+    if (["exams", "users", "students", "sessions", "audit"].includes(parts[0])) {
+      return { section: parts[0] as Section };
+    }
+  }
   if (parts[0] === "exams") {
-    if (parts[1] === "new") return { section: "exams", modal: "new-exam" };
+    if (parts[1] === "new" && parts.length === 2) return { section: "exams", modal: "new-exam" };
     if (parts[1]) {
-      if (parts[2] === "edit") {
+      if (parts[2] === "edit" && parts.length === 3) {
         return { section: "exams", examId: parts[1], modal: "edit-exam" };
       }
-      if (parts[2] === "participants") {
+      if (parts[2] === "participants" && (parts.length === 3 || (parts.length === 4 && parts[3] === "new"))) {
         return {
           section: "students",
           examId: parts[1],
           modal: parts[3] === "new" ? "add-student" : undefined,
         };
       }
-      return { section: "exams", examId: parts[1] };
     }
-    return { section: "exams" };
   }
-  if (parts[0] === "users") return { section: "users" };
-  if (parts[0] === "students") {
-    return parts[1]
-      ? { section: "students", examId: parts[1] }
-      : { section: "students" };
+  if (parts[0] === "sessions" && parts.length === 2) {
+    return { section: "sessions", sessionId: parts[1], modal: "session" };
   }
-  if (parts[0] === "sessions") {
-    return parts[1]
-      ? { section: "sessions", sessionId: parts[1], modal: "session" }
-      : { section: "sessions" };
-  }
-  if (parts[0] === "audit") return { section: "audit" };
-  return { section: "overview" };
+  return { section: "not-found" };
 }
 
 function routePath(route: AdminRoute): string {
@@ -253,19 +247,27 @@ function App() {
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [exams, setExams] = useState<Exam[]>([]);
-  const [students, setStudents] = useState<Student[]>([]);
-  const [examAdmins, setExamAdmins] = useState<ExamAdmin[]>([]);
+  const [participants, setParticipants] = useState<{ examId: string; students: Student[]; admins: ExamAdmin[] } | null>(null);
+  const [participantsRevision, setParticipantsRevision] = useState(0);
   const [users, setUsers] = useState<components["schemas"]["User"][]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
-  const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
-  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
-  const [sessionEvents, setSessionEvents] = useState<Event[]>([]);
+  const [sessionTimeline, setSessionTimeline] = useState<{ sessionId: string; events: Event[] } | null>(null);
   const [deleteExam, setDeleteExam] = useState<Exam | null>(null);
-  const [editingExam, setEditingExam] = useState<Exam | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const section = route.section;
+  // Resource identity comes exclusively from the URL. In particular, going
+  // back must not leave a stale dialog (or another exam's editable roster).
+  const selectedExam = exams.find((exam) => exam.id === route.examId) ?? null;
+  const editingExam = route.modal === "edit-exam" ? selectedExam : null;
+  const selectedSession = route.modal === "session"
+    ? sessions.find((session) => session.id === route.sessionId) ?? null
+    : null;
+  const participantData = participants?.examId === route.examId ? participants : null;
+  const students = participantData?.students ?? [];
+  const examAdmins = participantData?.admins ?? [];
+  const sessionEvents = sessionTimeline?.sessionId === route.sessionId ? (sessionTimeline?.events ?? []) : [];
   const examDialogOpen =
     route.modal === "new-exam" ||
     (route.modal === "edit-exam" && editingExam !== null);
@@ -281,7 +283,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setRoute(parseRoute(window.location.pathname));
+    const onPopState = () => {
+      setRoute(parseRoute(window.location.pathname));
+      setSidebarOpen(false);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -317,64 +322,69 @@ function App() {
   const refresh = useCallback(async () => {
     setBusy(true);
     setError("");
-    await Promise.all([loadExams(), loadSessions(), loadEvents(), loadUsers()]);
-    setBusy(false);
+    try {
+      await Promise.all([loadExams(), loadSessions(), loadEvents(), loadUsers()]);
+      setParticipantsRevision((value) => value + 1);
+    } catch {
+      setError("无法连接 BYOD Server，请检查网络后重试。");
+    } finally {
+      setBusy(false);
+    }
   }, [loadEvents, loadExams, loadSessions, loadUsers]);
   useEffect(() => {
+    let cancelled = false;
     void api.GET("/auth/me").then((result) => {
+      if (cancelled) return;
       if (!result.error && (result.data?.capabilities.platform_admin || result.data?.capabilities.exam_admin)) {
         localStorage.setItem("byod.csrf_token", result.data.csrf_token);
         setUser(result.data.user as components["schemas"]["User"]);
         void refresh();
       }
-      setAuthLoading(false);
+    }).catch(() => {
+      if (!cancelled) setError("无法验证登录状态，请检查网络后重试。");
+    }).finally(() => {
+      if (!cancelled) setAuthLoading(false);
     });
+    return () => { cancelled = true; };
   }, [refresh]);
-  const loadStudents = useCallback(async (exam: Exam) => {
-    setSelectedExam(exam);
-    const [result, adminsResult] = await Promise.all([api.GET("/admin/api/exams/{examId}/participants", {
-      params: { path: { examId: exam.id } },
-    }), api.GET("/admin/api/exams/{examId}/admins", { params: { path: { examId: exam.id } } })]);
-    if (!result.error) setStudents(((result.data || []) as components["schemas"]["Participant"][]).map((item) => ({subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled})));
-    if (!adminsResult.error) setExamAdmins((adminsResult.data || []) as ExamAdmin[]);
-  }, []);
-  const openSession = useCallback(async (session: Session) => {
-    setSelectedSession(session);
-    const result = await api.GET("/admin/api/sessions/{sessionId}/events", {
-      params: { path: { sessionId: session.id } },
+  useEffect(() => {
+    if (!user || section !== "students" || !route.examId) return;
+    const examId = route.examId;
+    const controller = new AbortController();
+    const options = { params: { path: { examId } }, signal: controller.signal };
+    void Promise.all([
+      api.GET("/admin/api/exams/{examId}/participants", options),
+      api.GET("/admin/api/exams/{examId}/admins", options),
+    ]).then(([result, adminsResult]) => {
+      if (controller.signal.aborted) return;
+      setParticipants({
+        examId,
+        students: (result.data || []).map((item) => ({ subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled })),
+        admins: adminsResult.data || [],
+      });
+      if (result.error || adminsResult.error) setError("无法加载考试名单或管理员，请检查权限后重试。");
+    }).catch(() => {
+      if (!controller.signal.aborted) setError("无法加载考试名单，请检查网络后重试。");
     });
-    setSessionEvents(result.error ? [] : ((result.data || []) as Event[]));
-  }, []);
+    return () => { controller.abort(); };
+  }, [user, section, route.examId, participantsRevision]);
   useEffect(() => {
-    const exam = route.examId
-      ? exams.find((item) => item.id === route.examId)
-      : undefined;
-    if (exam) {
-      setSelectedExam(exam);
-      if (route.modal === "edit-exam") setEditingExam(exam);
-      if (route.section === "students") void loadStudents(exam);
-    } else if (route.modal === "new-exam") {
-      setSelectedExam(null);
-      setEditingExam(null);
-    } else if (route.section !== "students" || !route.examId) {
-      setSelectedExam(null);
-    }
-    if (route.modal !== "edit-exam" && route.modal !== "new-exam") {
-      setEditingExam(null);
-    }
-  }, [exams, loadStudents, route]);
+    if (!user || !route.sessionId) return;
+    const sessionId = route.sessionId;
+    const controller = new AbortController();
+    void api.GET("/admin/api/sessions/{sessionId}/events", {
+      params: { path: { sessionId } }, signal: controller.signal,
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      setSessionTimeline({ sessionId, events: result.data || [] });
+      if (result.error) setError("无法加载 Session 事件，请检查权限后重试。");
+    }).catch(() => {
+      if (!controller.signal.aborted) setError("无法加载 Session 事件，请检查网络后重试。");
+    });
+    return () => { controller.abort(); };
+  }, [user, route.sessionId, sessions]);
 
-  useEffect(() => {
-    if (route.modal === "session" && route.sessionId) {
-      const session = sessions.find((item) => item.id === route.sessionId);
-      if (session) void openSession(session);
-      return;
-    }
-    if (route.section !== "sessions") {
-      setSelectedSession(null);
-      setSessionEvents([]);
-    }
-  }, [openSession, route, sessions]);
+  const loadStudents = () => setParticipantsRevision((value) => value + 1);
 
   const openSection = (next: Section) => {
     navigate({ section: next });
@@ -397,7 +407,7 @@ function App() {
       return;
     }
     toast.add({ title: "考试已删除", description: exam.id, type: "success" });
-    if (selectedExam?.id === exam.id) setSelectedExam(null);
+    if (route.examId === exam.id) navigate({ section: "exams" }, true);
     await loadExams();
   };
   const publishExam = async (exam: Exam) => {
@@ -424,7 +434,6 @@ function App() {
       return;
     }
     const next = result.data as Session;
-    setSelectedSession(next);
     toast.add({ title: action === "suspend" ? "Session 已暂停" : "Session 已恢复", type: "success" });
     setSessions((items) =>
       items.map((item) => (item.id === next.id ? next : item)),
@@ -567,7 +576,7 @@ function App() {
                   modal: "add-student",
                 })
               }
-              onRefresh={() => selectedExam && void loadStudents(selectedExam)}
+              onRefresh={() => selectedExam && loadStudents()}
             />
           )}
           {section === "sessions" && (
@@ -581,6 +590,13 @@ function App() {
           )}
           {section === "audit" && (
             <AuditPage events={events} onRefresh={() => void loadEvents()} />
+          )}
+          {section === "not-found" && (
+            <PageHeading
+              title="页面不存在"
+              description="请从左侧导航选择一个管理后台页面。"
+              action={<Button onClick={() => navigate({ section: "overview" })}>返回总览</Button>}
+            />
           )}
         </main>
       </div>
@@ -608,15 +624,13 @@ function App() {
           } else {
             navigate({ section: "students" });
           }
-          if (selectedExam) void loadStudents(selectedExam);
+          if (selectedExam) loadStudents();
         }}
       />
       <SessionDialog
         session={selectedSession}
         events={sessionEvents}
         onClose={() => {
-          setSelectedSession(null);
-          setSessionEvents([]);
           navigate({ section: "sessions" });
         }}
         onAction={(action) => void updateSession(action)}
