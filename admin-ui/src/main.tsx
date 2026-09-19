@@ -258,6 +258,18 @@ function App() {
     if (selectedExam?.id === exam.id) setSelectedExam(null);
     await loadExams();
   };
+  const publishExam = async (exam: Exam) => {
+    const result = await api.POST("/admin/api/exams/{examId}/publish", {
+      params: { path: { examId: exam.id } },
+    });
+    if (result.error) {
+      setError("发布考试失败，请检查开始/结束时间。 ");
+      toast.add({ title: "发布失败", type: "error" });
+      return;
+    }
+    toast.add({ title: "考试已发布", description: exam.id, type: "success" });
+    await loadExams();
+  };
   const openSession = async (session: Session) => {
     setSelectedSession(session);
     const result = await api.GET("/admin/api/sessions/{sessionId}/events", {
@@ -412,6 +424,7 @@ function App() {
                 setExamDialogOpen(true);
               }}
               onDelete={(exam) => setDeleteExam(exam)}
+              onPublish={(exam) => void publishExam(exam)}
               onStudents={(exam) => {
                 void loadStudents(exam);
                 openSection("students");
@@ -954,6 +967,7 @@ function ExamsPage({
   onEdit,
   onDelete,
   onStudents,
+  onPublish,
 }: {
   exams: Exam[];
   selected: Exam | null;
@@ -961,6 +975,7 @@ function ExamsPage({
   onEdit: (exam: Exam) => void;
   onDelete: (exam: Exam) => void;
   onStudents: (exam: Exam) => void;
+  onPublish: (exam: Exam) => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -1043,8 +1058,11 @@ function ExamsPage({
                 >
                   <TableCell>
                     <p className="font-medium text-slate-900">{exam.id}</p>
+                    <p className="font-mono text-xs font-semibold tracking-widest text-indigo-600">
+                      Code: {exam.exam_code}
+                    </p>
                     <p className="text-xs text-slate-500">
-                      grips://exam.cs.ac.cn/{exam.id}
+                      grips://exam.cs.ac.cn
                     </p>
                   </TableCell>
                   <TableCell className="max-w-xs truncate text-slate-600">
@@ -1073,6 +1091,16 @@ function ExamsPage({
                       >
                         编辑
                       </Button>
+                      {(exam.state === "draft" || exam.state === "scheduled") && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-emerald-700 hover:bg-emerald-50"
+                          onClick={() => onPublish(exam)}
+                        >
+                          发布
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1170,7 +1198,7 @@ function StudentsPage({
               <span>
                 {students.length
                   ? `已配置 ${students.length} 名学生`
-                  : "尚未配置白名单（默认允许所有已认证用户）"}
+                  : "尚未配置白名单（默认拒绝参加考试）"}
               </span>
               <Button variant="ghost" size="sm" onClick={onRefresh}>
                 <RefreshCw className="h-3.5 w-3.5" />
@@ -1542,6 +1570,7 @@ function ExamDialog({
   onSaved: () => void;
 }) {
   const [id, setId] = useState("");
+  const [examCode, setExamCode] = useState("");
   const [baseURL, setBaseURL] = useState("");
   const [state, setState] = useState<Exam["state"]>("draft");
   const [starts, setStarts] = useState("");
@@ -1554,6 +1583,7 @@ function ExamDialog({
   useEffect(() => {
     if (!open) return;
     setId(exam?.id || "");
+    setExamCode(exam?.exam_code || "");
     setBaseURL(exam?.base_url || "");
     setState(exam?.state || "draft");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
@@ -1602,16 +1632,17 @@ function ExamDialog({
     }
     try {
       const parsed = new URL(baseURL.trim());
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      if (parsed.protocol !== "https:" || (parsed.pathname !== "" && parsed.pathname !== "/") || parsed.search || parsed.hash || parsed.username || parsed.password) {
         throw new Error("unsupported protocol");
       }
     } catch {
-      setFormError("源站 URL 必须是合法的 http(s) 地址，例如 https://cs101.gbu.edu.cn。");
+      setFormError("透明 TLS 源站必须是 HTTPS origin（不能带路径、查询参数或凭据），例如 https://cs101.gbu.edu.cn。");
       return;
     }
     setSaving(true);
     const body = {
       id: id.trim(),
+      exam_code: examCode.trim().toUpperCase() || undefined,
       base_url: baseURL.trim(),
       state,
       starts_at: starts ? new Date(starts).toISOString() : null,
@@ -1679,6 +1710,18 @@ function ExamDialog({
               ]}
             />
           </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="exam-code">考试识别码（8 位 Base36）</Label>
+          <Input
+            id="exam-code"
+            value={examCode}
+            maxLength={8}
+            onChange={(event) => setExamCode(event.target.value.toUpperCase())}
+            placeholder="保存时自动生成"
+            className="font-mono tracking-widest"
+          />
+          <p className="text-xs text-slate-500">学生在 grips://exam.cs.ac.cn 中输入此识别码。</p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="exam-base">源站 Base URL</Label>

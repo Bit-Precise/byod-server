@@ -163,6 +163,9 @@ func (s *Service) IssueTunnelTicket(ctx context.Context, sessionID string) (stri
 	}
 	info := TunnelTicketInfo{SessionID: session.ID, ExamID: session.ExamID, EndpointID: session.ExamID, ExpiresAt: now.Add(tunnelTicketTTL)}
 	s.mu.RUnlock()
+	if _, err := s.examWindow(ctx, info.ExamID, gateActive); err != nil {
+		return "", TunnelTicketInfo{}, err
+	}
 
 	ticket := randomToken(32)
 	record := &tunnelTicket{SessionID: info.SessionID, ExamID: info.ExamID, EndpointID: info.EndpointID, ExpiresAt: info.ExpiresAt}
@@ -212,6 +215,9 @@ func (s *Service) consumeTunnelTicketMode(ctx context.Context, auth *TunnelAuth,
 		if !ok {
 			return TunnelTicketInfo{}, errTunnelDenied
 		}
+		if _, err := s.examWindow(ctx, stored.ExamID, gateActive); err != nil {
+			return TunnelTicketInfo{}, errTunnelDenied
+		}
 		return TunnelTicketInfo{SessionID: stored.SessionID, ExamID: stored.ExamID, EndpointID: stored.EndpointID, ExpiresAt: stored.ExpiresAt}, nil
 	}
 	s.mu.Lock()
@@ -222,6 +228,9 @@ func (s *Service) consumeTunnelTicketMode(ctx context.Context, auth *TunnelAuth,
 	}
 	session := s.sessions[record.SessionID]
 	if session == nil || session.State != "active" {
+		return TunnelTicketInfo{}, errTunnelDenied
+	}
+	if _, err := s.examWindow(ctx, record.ExamID, gateActive); err != nil {
 		return TunnelTicketInfo{}, errTunnelDenied
 	}
 	if !reusable {
@@ -409,11 +418,38 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 
 func (s *Service) tunnelSessionActive(sessionID string) bool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if session := s.sessions[sessionID]; session != nil {
-		return session.State == "active"
+	session := s.sessions[sessionID]
+	active := session != nil && session.State == "active"
+	examID := ""
+	if session != nil {
+		examID = session.ExamID
 	}
-	return false
+	s.mu.RUnlock()
+	if !active {
+		return false
+	}
+	if _, err := s.examWindow(context.Background(), examID, gateActive); err != nil {
+		_ = s.endWithReason(context.Background(), session, "ends_at")
+		return false
+	}
+	// The source page replaces the grips:// bootstrap document, so its
+	// JavaScript heartbeat timer no longer exists. An authenticated tunnel is
+	// itself the liveness signal: refresh last_seen_at while the stream is
+	// alive, otherwise the regular max-idle suspension still applies.
+	now := time.Now().Unix()
+	s.mu.Lock()
+	if live := s.sessions[sessionID]; live == nil || live.State != "active" {
+		s.mu.Unlock()
+		return false
+	} else {
+		live.LastSeenAt = now
+		session = live
+	}
+	s.mu.Unlock()
+	if s.ExamStore != nil {
+		_ = s.ExamStore.SaveSession(context.Background(), session)
+	}
+	return true
 }
 
 // TunnelAuthProof is useful to independent client implementations and tests.

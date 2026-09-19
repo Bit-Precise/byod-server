@@ -314,6 +314,58 @@ func TestViolationSuspendsSession(t *testing.T) {
 	}
 }
 
+func TestManualCompletionBlocksSameStudent(t *testing.T) {
+	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	first := activateTestSession(t, service, "course-101")
+	complete := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/exams/course-101/complete", nil)
+	request.Header.Set("Authorization", "Bearer "+first["browser_token"])
+	service.ServeHTTP(complete, request)
+	if complete.Code != http.StatusOK || !strings.Contains(complete.Body.String(), `"state":"ended"`) {
+		t.Fatalf("completion failed: %d %s", complete.Code, complete.Body.String())
+	}
+	second := httptest.NewRecorder()
+	service.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"exam_id":"course-101"}`)))
+	var created map[string]string
+	_ = json.Unmarshal(second.Body.Bytes(), &created)
+	callback := httptest.NewRecorder()
+	service.ServeHTTP(callback, httptest.NewRequest(http.MethodGet, "/oidc/callback?state="+created["session_id"]+"&code=student-42", nil))
+	if callback.Code != http.StatusGone || !strings.Contains(callback.Body.String(), "exam_already_completed") {
+		t.Fatalf("completed student was allowed back in: %d %s", callback.Code, callback.Body.String())
+	}
+}
+
+func TestConcurrentSessionCompletionIsSingleUse(t *testing.T) {
+	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	first := activateTestSession(t, service, "course-101")
+	second := activateTestSession(t, service, "course-101")
+	request := func(token string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/exams/course-101/complete", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		service.ServeHTTP(recorder, req)
+		return recorder
+	}
+	firstResult := request(first["browser_token"])
+	secondResult := request(second["browser_token"])
+	if firstResult.Code != http.StatusOK || (secondResult.Code != http.StatusGone && secondResult.Code != http.StatusUnauthorized) {
+		t.Fatalf("completion was not single-use: first=%d second=%d", firstResult.Code, secondResult.Code)
+	}
+}
+
+func TestExamCodeValidation(t *testing.T) {
+	for _, code := range []string{"A1B2C3D4", "00000000", "zzzzzzzz"} {
+		if !validExamCode(code) {
+			t.Fatalf("valid exam code rejected: %q", code)
+		}
+	}
+	for _, code := range []string{"A1B2C3", "A1B2C3D45", "A1B2C3D!", "ABCDEFG!"} {
+		if validExamCode(code) {
+			t.Fatalf("invalid exam code accepted: %q", code)
+		}
+	}
+}
+
 func TestHeartbeatUpdatesActiveSession(t *testing.T) {
 	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
 	create := httptest.NewRecorder()

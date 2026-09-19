@@ -32,7 +32,7 @@ cookie。
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
-生产环境的每场考试源站通过管理后台写入 PostgreSQL 的 `byod_exams.base_url`，不通过环境变量传递。启用透明 tunnel 时，`base_url` 必须是 HTTPS（服务端只拨号到该 origin 的 443/显式端口，不做 TLS termination）；`--upstream` 仅作为没有数据库记录时的本地开发回退值。
+生产环境的每场考试源站通过管理后台写入 PostgreSQL 的 `byod_exams.base_url`，不通过环境变量传递。启用透明 tunnel 时，`base_url` 必须是没有路径/查询的 HTTPS origin（服务端只拨号到该 origin 的 443/显式端口，不做 TLS termination）；`--upstream` 仅作为没有数据库记录时的本地开发回退值。
 
 每场考试的策略可以通过 `--policy-file` 或 `BYOD_POLICY_FILE` 覆盖，格式参考
 [`policy.example.json`](policy.example.json)。中台会强制覆盖 `exam_id` 和
@@ -54,7 +54,7 @@ helm upgrade --install byod helm/byod-server \
 ```
 
 访问 `/admin/` 打开管理员后台，使用 `X-Admin-Token` 对应的 token 登录。
-后台提供考试、源站、策略、学生名单、session 和审计日志管理。
+后台提供考试、源站、策略、学生名单、session 和审计日志管理。配置了考试名单后只允许名单内学生参加；空名单也按拒绝参加处理，避免误把尚未配置的考试公开。
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
@@ -77,6 +77,19 @@ oci://ghcr.io/bit-precise/charts/byod-server:<chart-version>
 镜像构建阶段会先执行 `admin-ui` 的 OpenAPI client 生成和 production build，再把
 UI 嵌入 Go 二进制；干净 checkout 不依赖本地 `dist` 文件。
 
+学生考试入口：
+
+```bash
+curl -X POST https://exam.cs.ac.cn/v1/exam-entry \\
+  -H 'Content-Type: application/json' \\
+  -d '{"exam_code":"A1B2C3D4"}'
+```
+
+管理后台保存考试后点击“发布”。服务端会为每场考试生成唯一的 8 位大写 Base36
+`exam_code`；学生访问裸 `grips://exam.cs.ac.cn` 输入该 code，不再需要知道内部
+`exam_id`。认证可在开始时间前完成，但 `/start` 直到 `starts_at` 才会成功；到达
+`ends_at` 后在线 session 和 tunnel 都会失效。
+
 获取考试配置：
 
 ```bash
@@ -93,6 +106,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/browser/login` | 启动浏览器级 Connect authorization-code + PKCE 登录 |
+| POST | `/v1/exam-entry` | 用 8 位 Base36 识别码解析已发布考试 |
 | GET | `/{exam_id}/.well-known/byod-configuration` | 读取 OIDC、策略和考试代理信息 |
 | POST | `/v1/sessions` | 创建会话，返回登录 URL 和会话 ID |
 | GET | `/oidc/callback` | OIDC 回调；服务端交换 code，不把 IdP token 返回浏览器 |
@@ -100,6 +114,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | POST | `/v1/sessions/{id}/start` | 原子地激活考试会话 |
 | POST | `/v1/sessions/{id}/heartbeat` | 更新浏览器存活时间；超过 45 秒未心跳会自动暂停 |
 | POST | `/v1/sessions/{id}/end` | 撤销会话，考试结束后解锁 |
+| POST | `/v1/exams/{exam_id}/complete` | 正式交卷；写入完成记录并禁止同一学生再次进入 |
 | POST | `/v1/sessions/{id}/violations` | 上报切后台、DevTools 等违规；严重违规会将会话置为 `suspended` |
 | GET | `/v1/sessions/{id}/events` | 读取本次作答的追加式事件审计记录 |
 | POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发考试窗口内有效的 tunnel ticket；HTTP CONNECT 在 TTL 内可复用，二进制 preface 单次使用；session suspend/end 会立即失效 |
@@ -110,6 +125,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET/POST | `/admin/api/exams` | 列出/创建考试 |
+| POST | `/admin/api/exams/{id}/publish` | 发布考试并根据时间窗口设置 scheduled/active |
 | GET/PATCH/DELETE | `/admin/api/exams/{id}` | 查看/编辑/删除考试及策略 |
 | GET/PUT/DELETE | `/admin/api/exams/{id}/students/{subject}` | 管理考试学生名单 |
 | GET | `/admin/api/sessions` 或 `/admin/api/exams/{id}/sessions` | 查看在线作答 session |

@@ -55,6 +55,7 @@ type Session struct {
 // Domain entities used by the browser protocol and durable store.
 type Exam struct {
 	ID            string
+	ExamCode      string
 	Origin        string
 	PolicyVersion int
 }
@@ -121,6 +122,7 @@ type Service struct {
 	events          map[string][]ExamEvent
 	tunnelTickets   map[string]*tunnelTicket
 	browserLogins   map[string]*browserLoginState
+	completions     map[string]time.Time
 }
 
 func (s *Service) upstreamForExam(ctx context.Context, examID string) (*url.URL, error) {
@@ -151,7 +153,7 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 		ExamUpstreams:  make(map[string]*url.URL),
 		PolicySecret:   secret, OIDCAuthorize: "https://idp.example/authorize",
 		sessions: make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent),
-		tunnelTickets: make(map[string]*tunnelTicket), browserLogins: make(map[string]*browserLoginState)}, nil
+		tunnelTickets: make(map[string]*tunnelTicket), browserLogins: make(map[string]*browserLoginState), completions: make(map[string]time.Time)}, nil
 }
 
 // ParseExamUpstreams parses an operator-supplied JSON object mapping exam IDs
@@ -381,11 +383,20 @@ func (s *Service) configuration(examID string) map[string]any {
 		clientID = s.OIDC.ClientID
 	}
 	sourceOrigin, sourceHost := s.sourceOrigin(examID)
+	exam := map[string]any{"id": examID, "origin": s.ExamOrigin,
+		"proxy_origin": s.ExamOrigin, "unlock_path": "/" + examID + "/end",
+		"source_origin": sourceOrigin, "source_host": sourceHost,
+		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
+	if s.ExamStore != nil {
+		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
+			exam["exam_code"] = stored.ExamCode
+			exam["state"] = stored.State
+			exam["starts_at"] = stored.StartsAt
+			exam["ends_at"] = stored.EndsAt
+		}
+	}
 	return map[string]any{"version": 1,
-		"exam": map[string]any{"id": examID, "origin": s.ExamOrigin,
-			"proxy_origin": s.ExamOrigin, "unlock_path": "/" + examID + "/end",
-			"source_origin": sourceOrigin, "source_host": sourceHost,
-			"endpoint_id": examID, "transport": "byod-tunnel-v1"},
+		"exam": exam,
 		"tunnel": map[string]any{"protocol": "byod-tunnel-v1", "endpoint_id": examID,
 			"endpoint":    s.TunnelEndpoint,
 			"ticket_path": "/v1/sessions/{session_id}/tunnel-ticket"},
@@ -500,6 +511,33 @@ func (s *Service) authorize(token, id string) *Session {
 	session := s.sessions[id]
 	if session != nil && hmac.Equal([]byte(session.BrowserToken), []byte(token)) {
 		return session
+	}
+	return nil
+}
+
+// checkStudentEligibility is called at both authentication and activation.
+// An administrator may change the roster after a student has authenticated but
+// before the scheduled start, so activation must re-check the durable roster
+// and one-time completion record.
+func (s *Service) checkStudentEligibility(ctx context.Context, examID, subject string) error {
+	if examID == "" || subject == "" {
+		return nil
+	}
+	if s.ExamStore != nil {
+		configured, enabled, err := s.ExamStore.StudentAccess(ctx, examID, subject)
+		if err != nil {
+			return err
+		}
+		if configured && !enabled {
+			return ErrExamStudentDenied
+		}
+	}
+	completed, err := s.studentCompleted(ctx, examID, subject)
+	if err != nil {
+		return err
+	}
+	if completed {
+		return ErrExamAlreadyDone
 	}
 	return nil
 }
@@ -622,18 +660,15 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		s.beginBrowserLogin(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/exam-entry" {
+		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/.well-known/byod-configuration") {
 		if examID := examIDFromWellKnown(r.URL.Path); examID != "" {
-			if s.ExamStore != nil {
-				_, exists, err := s.ExamStore.Upstream(r.Context(), examID)
-				if err != nil {
-					s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "exam_configuration_unavailable"})
-					return
-				}
-				if !exists {
-					s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "exam_not_found"})
-					return
-				}
+			if _, err := s.examWindow(r.Context(), examID, gateAuthenticate); err != nil {
+				s.writeExamError(w, err)
+				return
 			}
 			s.writeJSON(w, http.StatusOK, s.configuration(examID))
 			return
@@ -677,21 +712,36 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		} else {
 			subject = "oidc:" + code
 		}
-		if s.ExamStore != nil {
-			configured, enabled, accessErr := s.ExamStore.StudentAccess(r.Context(), session.ExamID, subject)
-			if accessErr != nil {
-				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "student_roster_unavailable"})
-				return
+		if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateAuthenticate); gateErr != nil {
+			s.mu.Lock()
+			if current := s.sessions[state]; current != nil {
+				current.State = "ended"
 			}
-			if configured && !enabled {
+			s.mu.Unlock()
+			s.writeExamError(w, gateErr)
+			return
+		}
+		if eligibilityErr := s.checkStudentEligibility(r.Context(), session.ExamID, subject); eligibilityErr != nil {
+			if errors.Is(eligibilityErr, ErrExamStudentDenied) {
 				s.mu.Lock()
 				if current := s.sessions[state]; current != nil && current.State == "authenticating" {
 					current.State = "pending"
 				}
 				s.mu.Unlock()
-				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "student_not_allowed"})
+				s.writeExamError(w, eligibilityErr)
 				return
 			}
+			if errors.Is(eligibilityErr, ErrExamAlreadyDone) {
+				s.mu.Lock()
+				if current := s.sessions[state]; current != nil {
+					current.State = "ended"
+				}
+				s.mu.Unlock()
+				s.writeExamError(w, eligibilityErr)
+				return
+			}
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "student_eligibility_unavailable"})
+			return
 		}
 		s.mu.Lock()
 		if current := s.sessions[state]; current == nil || current.State != "authenticating" {
@@ -785,13 +835,20 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 3 && parts[0] == "exams" && parts[2] == "complete" {
+		s.completeExamRequest(w, r, parts[1])
+		return
+	}
 	if len(parts) == 2 && parts[1] == "end" {
 		session := s.findByToken(tokenFromRequest(r))
 		if session == nil || session.ExamID != parts[0] {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "active_session_required"})
 			return
 		}
-		s.end(session)
+		if err := s.endWithReason(r.Context(), session, "manual"); err != nil {
+			s.writeCompletionError(w, err)
+			return
+		}
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
 			http.Redirect(w, r, "grips://exam/?ended=1", http.StatusSeeOther)
 			return
@@ -803,6 +860,15 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 		session := s.authorize(tokenFromRequest(r), parts[2])
 		if session == nil {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateAuthenticate); gateErr != nil {
+			if errors.Is(gateErr, ErrExamEnded) {
+				s.mu.Lock()
+				session.State = "ended"
+				s.mu.Unlock()
+			}
+			s.writeJSON(w, examErrorStatus(gateErr), map[string]any{"error": gateErr.Error(), "session_id": session.ID, "state": session.State})
 			return
 		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"session_id": session.ID, "exam_id": session.ExamID,
@@ -865,6 +931,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodPost {
 		var input struct {
 			ID       string         `json:"id"`
+			ExamCode string         `json:"exam_code"`
 			BaseURL  string         `json:"base_url"`
 			State    string         `json:"state"`
 			StartsAt *time.Time     `json:"starts_at"`
@@ -875,14 +942,48 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		if err := s.ExamStore.UpsertExamDetails(r.Context(), input.ID, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+		if err := s.ExamStore.UpsertExamDetailsWithCode(r.Context(), input.ID, input.ExamCode, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+		if exam, ok, err := s.ExamStore.GetExam(r.Context(), input.ID); err == nil && ok {
+			s.writeJSON(w, http.StatusCreated, exam)
+		} else {
+			s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+		}
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "publish" && r.Method == http.MethodPost {
+		exam, ok, err := s.ExamStore.GetExam(r.Context(), parts[3])
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			return
+		}
+		if !ok {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "exam_not_found"})
+			return
+		}
+		if exam.State == "ended" {
+			s.writeJSON(w, http.StatusConflict, map[string]string{"error": "exam_ended"})
+			return
+		}
+		if exam.EndsAt != nil && !time.Now().Before(*exam.EndsAt) {
+			s.writeJSON(w, http.StatusConflict, map[string]string{"error": "exam_ended"})
+			return
+		}
+		nextState := "active"
+		if exam.StartsAt != nil && time.Now().Before(*exam.StartsAt) {
+			nextState = "scheduled"
+		}
+		if err := s.ExamStore.SetExamState(r.Context(), parts[3], nextState); err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
+			return
+		}
+		exam.State = nextState
+		s.writeJSON(w, http.StatusOK, exam)
+		return
+	}
 	if r.URL.Path == "/admin/api/sessions" && r.Method == http.MethodGet {
 		if sessions, err := s.ExamStore.ListAllSessions(r.Context()); err == nil {
 			s.writeJSON(w, http.StatusOK, sessions)
@@ -922,6 +1023,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodPatch {
 			var input struct {
+				ExamCode string         `json:"exam_code"`
 				BaseURL  string         `json:"base_url"`
 				State    string         `json:"state"`
 				StartsAt *time.Time     `json:"starts_at"`
@@ -932,11 +1034,15 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			if err := s.ExamStore.UpsertExamDetails(r.Context(), parts[3], input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+			if err := s.ExamStore.UpsertExamDetailsWithCode(r.Context(), parts[3], input.ExamCode, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+			if exam, ok, err := s.ExamStore.GetExam(r.Context(), parts[3]); err == nil && ok {
+				s.writeJSON(w, http.StatusOK, exam)
+			} else {
+				s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+			}
 			return
 		}
 	}
@@ -1081,31 +1187,102 @@ func coalesceState(state string) string {
 	return "draft"
 }
 
+func (s *Service) completeExamRequest(w http.ResponseWriter, r *http.Request, examID string) {
+	session := s.findByToken(tokenFromRequest(r))
+	if session == nil || session.ExamID != examID {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "active_session_required"})
+		return
+	}
+	if session.State == "ended" {
+		s.writeExamError(w, ErrExamAlreadyDone)
+		return
+	}
+	if session.State != "active" && session.State != "authenticated" {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "active_session_required"})
+		return
+	}
+	if err := s.endWithReason(r.Context(), session, "manual"); err != nil {
+		s.writeCompletionError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "byod_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: strings.HasPrefix(s.ExamOrigin, "https://"), SameSite: http.SameSiteStrictMode})
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		http.Redirect(w, r, "grips://exam/?ended=1", http.StatusSeeOther)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "exam_id": examID, "state": "ended"})
+}
+
 func (s *Service) post(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/exams/") && strings.HasSuffix(r.URL.Path, "/complete") {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 4 || parts[0] != "v1" || parts[1] != "exams" || !validExamID(parts[2]) {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+			return
+		}
+		s.completeExamRequest(w, r, parts[2])
+		return
+	}
+	if r.URL.Path == "/v1/exam-entry" {
+		var input struct {
+			ExamCode string `json:"exam_code"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&input); err != nil || !validExamCode(normalizeExamCode(input.ExamCode)) {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_code"})
+			return
+		}
+		exam, err := s.examForCode(r.Context(), input.ExamCode)
+		if err != nil {
+			s.writeExamError(w, err)
+			return
+		}
+		if _, err := s.examWindow(r.Context(), exam.ID, gateAuthenticate); err != nil {
+			s.writeExamError(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"exam_id": exam.ID, "exam_code": exam.ExamCode, "state": exam.State,
+			"starts_at": exam.StartsAt, "ends_at": exam.EndsAt,
+			"base_url": exam.BaseURL,
+		})
+		return
+	}
 	if r.URL.Path == "/v1/sessions" {
 		var input struct {
 			ExamID    string `json:"exam_id"`
+			ExamCode  string `json:"exam_code"`
 			ReturnURI string `json:"return_uri"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input); err != nil || !validExamID(input.ExamID) {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_id"})
 			return
 		}
-		if s.ExamStore != nil {
-			if _, exists, err := s.ExamStore.Upstream(r.Context(), input.ExamID); err != nil {
-				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "exam_configuration_unavailable"})
-				return
-			} else if !exists {
-				s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "exam_not_found"})
+		if input.ExamID == "" && input.ExamCode != "" {
+			exam, err := s.examForCode(r.Context(), input.ExamCode)
+			if err != nil {
+				s.writeExamError(w, err)
 				return
 			}
-			if state, _, err := s.ExamStore.ExamState(r.Context(), input.ExamID); err != nil {
-				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "exam_configuration_unavailable"})
-				return
-			} else if state == "ended" {
-				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "exam_ended"})
+			input.ExamID = exam.ID
+		}
+		if !validExamID(input.ExamID) {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_id"})
+			return
+		}
+		if input.ExamCode != "" && s.ExamStore != nil {
+			exam, codeErr := s.examForCode(r.Context(), input.ExamCode)
+			if codeErr != nil || exam.ID != input.ExamID {
+				if codeErr != nil {
+					s.writeExamError(w, codeErr)
+				} else {
+					s.writeJSON(w, http.StatusConflict, map[string]string{"error": "exam_code_mismatch"})
+				}
 				return
 			}
+		}
+		if _, err := s.examWindow(r.Context(), input.ExamID, gateAuthenticate); err != nil {
+			s.writeExamError(w, err)
+			return
 		}
 		if input.ReturnURI != "" {
 			returnURL, err := url.Parse(input.ReturnURI)
@@ -1118,7 +1295,8 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 		session := &Session{ID: randomToken(18), AttemptID: randomToken(18), BrowserSessionID: randomToken(18), BrowserToken: randomToken(32), ExamID: input.ExamID, State: "pending", CreatedAt: now, LastSeenAt: now, ReturnURI: input.ReturnURI}
 		s.mu.Lock()
 		if _, exists := s.exams[input.ExamID]; !exists {
-			s.exams[input.ExamID] = &Exam{ID: input.ExamID, Origin: s.ExamOrigin, PolicyVersion: 1}
+			code, _ := newExamCode()
+			s.exams[input.ExamID] = &Exam{ID: input.ExamID, ExamCode: code, Origin: s.ExamOrigin, PolicyVersion: 1}
 		}
 		s.sessions[session.ID] = session
 		if s.ExamStore != nil {
@@ -1146,11 +1324,41 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if parts[3] == "start" {
+			if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateStart); gateErr != nil {
+				s.writeExamError(w, gateErr)
+				return
+			}
+			if eligibilityErr := s.checkStudentEligibility(r.Context(), session.ExamID, session.Subject); eligibilityErr != nil {
+				s.mu.Lock()
+				if errors.Is(eligibilityErr, ErrExamAlreadyDone) {
+					session.State = "ended"
+				} else if errors.Is(eligibilityErr, ErrExamStudentDenied) {
+					session.State = "suspended"
+				}
+				s.mu.Unlock()
+				if errors.Is(eligibilityErr, ErrExamAlreadyDone) || errors.Is(eligibilityErr, ErrExamStudentDenied) {
+					s.writeExamError(w, eligibilityErr)
+				} else {
+					s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "student_eligibility_unavailable"})
+				}
+				return
+			}
+			if s.ExamStore != nil {
+				if err := s.ExamStore.ActivateSession(r.Context(), session.ID, session.ExamID, session.Subject); err != nil {
+					s.writeExamError(w, err)
+					return
+				}
+			}
 			s.mu.Lock()
 			if session.State != "authenticated" {
 				state := session.State
 				s.mu.Unlock()
 				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "authentication_required", "state": state})
+				return
+			}
+			if _, done := s.completions[session.ExamID+"\x00"+session.Subject]; done {
+				s.mu.Unlock()
+				s.writeExamError(w, ErrExamAlreadyDone)
 				return
 			}
 			session.State = "active"
@@ -1161,7 +1369,10 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if parts[3] == "end" {
-			s.end(session)
+			if err := s.endWithReason(r.Context(), session, "manual"); err != nil {
+				s.writeCompletionError(w, err)
+				return
+			}
 			s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": "ended"})
 			return
 		}
@@ -1175,6 +1386,11 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.mu.Lock()
+			if session.State == "ended" {
+				s.mu.Unlock()
+				s.writeExamError(w, ErrExamAlreadyDone)
+				return
+			}
 			session.ViolationCount++
 			session.LastViolation = input.Type
 			revoked := false
@@ -1193,6 +1409,10 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if parts[3] == "heartbeat" {
+			if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateActive); gateErr != nil {
+				s.writeExamError(w, gateErr)
+				return
+			}
 			s.mu.Lock()
 			now := time.Now().Unix()
 			heartbeat, maxIdle := s.sessionLimits(session.ExamID)
@@ -1240,15 +1460,66 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) end(session *Session) {
+	_ = s.endWithReason(context.Background(), session, "manual")
+}
+
+func (s *Service) endWithReason(ctx context.Context, session *Session, reason string) error {
+	if session == nil {
+		return ErrExamNotFound
+	}
+	s.mu.RLock()
+	if session.State == "ended" {
+		s.mu.RUnlock()
+		return nil
+	}
+	subject := session.Subject
+	s.mu.RUnlock()
+	claimed, err := s.recordStudentCompletion(ctx, session.ExamID, subject, session.ID, time.Now())
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		// A second authenticated session for the same student raced the first
+		// submission. Close this session as well, but report the terminal state
+		// to the caller instead of pretending that a second submission worked.
+		s.mu.Lock()
+		if session.State != "ended" {
+			session.State = "ended"
+			s.revokeTunnelTicketsLocked(session.ID)
+			s.appendEvent(session, "duplicate_completion", "warning", "student_already_completed")
+		}
+		s.mu.Unlock()
+		return ErrExamAlreadyDone
+	}
 	s.mu.Lock()
+	if session.State == "ended" {
+		s.mu.Unlock()
+		return nil
+	}
 	session.State = "ended"
-	session.Subject = ""
 	s.revokeTunnelTicketsLocked(session.ID)
-	s.appendEvent(session, "exam_ended", "info", "")
+	details := reason
+	if details == "" {
+		details = "manual"
+	}
+	s.appendEvent(session, "exam_completed", "info", details)
+	// All previously authenticated attempts for this student are terminal,
+	// not just the tab that submitted. Existing CONNECT streams are checked
+	// against these states and shut down by the tunnel monitor.
+	for _, other := range s.sessions {
+		if other.ID != session.ID && subject != "" && other.ExamID == session.ExamID && other.Subject == subject && other.State != "ended" {
+			other.State = "ended"
+			s.revokeTunnelTicketsLocked(other.ID)
+			s.appendEvent(other, "exam_completed_elsewhere", "info", session.ID)
+		}
+	}
 	s.mu.Unlock()
 	if s.ExamStore != nil {
-		_ = s.ExamStore.RevokeTunnelTickets(context.Background(), session.ID)
+		if err := s.ExamStore.RevokeTunnelTickets(ctx, session.ID); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
@@ -1272,6 +1543,10 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if session == nil || session.ExamID != examID || session.State != "active" {
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "active_session_required"})
+		return
+	}
+	if _, gateErr := s.examWindow(r.Context(), examID, gateActive); gateErr != nil {
+		s.writeExamError(w, gateErr)
 		return
 	}
 	if !s.enforceIdleTimeout(session) {
