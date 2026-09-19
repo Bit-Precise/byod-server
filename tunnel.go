@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -44,6 +45,16 @@ var (
 	errTunnelMalformed = errors.New("malformed tunnel authentication frame")
 	errTunnelDenied    = errors.New("tunnel authentication denied")
 )
+
+func firstTunnelError(first, second error) string {
+	if first != nil {
+		return first.Error()
+	}
+	if second != nil {
+		return second.Error()
+	}
+	return "unknown_upstream_error"
+}
 
 // tunnelTicket is kept in memory when no database is configured. With a
 // database, the same fields are persisted in byod_tunnel_tickets and the
@@ -311,7 +322,12 @@ func readConnectTunnelAuth(r *bufio.Reader) (*TunnelAuth, error) {
 // ServeTunnel handles one authenticated raw TCP stream. The stream after the
 // preface is opaque to BYOD: it is the browser's TLS connection to the source.
 func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	started := time.Now()
+	remote := conn.RemoteAddr().String()
+	defer func() {
+		slog.Info("tunnel_closed", "remote", remote, "duration_ms", time.Since(started).Seconds()*1000)
+		_ = conn.Close()
+	}()
 	_ = conn.SetReadDeadline(time.Now().Add(tunnelHandshakeTime))
 	// Accept both the binary BYOD preface and an HTTP CONNECT request. The
 	// latter is what Chromium's built-in HTTPS proxy stack emits; bytes after
@@ -330,6 +346,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 		auth, err = readTunnelAuth(io.MultiReader(bytes.NewReader(peek), conn))
 	}
 	if err != nil {
+		slog.Warn("tunnel_handshake_failed", "remote", remote, "connect_mode", connectMode, "error", err.Error())
 		if connectMode {
 			_, _ = io.WriteString(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
 		} else {
@@ -339,6 +356,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 	}
 	info, err := s.consumeTunnelTicketMode(ctx, auth, connectMode)
 	if err != nil {
+		slog.Warn("tunnel_authentication_failed", "remote", remote, "connect_mode", connectMode, "error", err.Error())
 		if connectMode {
 			_, _ = io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
 		} else {
@@ -349,6 +367,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 	upstream, err := s.upstreamForExam(ctx, info.ExamID)
 	address, addressErr := parseTunnelUpstream(upstream)
 	if err != nil || addressErr != nil {
+		slog.Error("tunnel_upstream_invalid", "remote", remote, "exam_id", info.ExamID, "error", firstTunnelError(err, addressErr))
 		if connectMode {
 			_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
 		} else {
@@ -359,6 +378,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	upstreamConn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
+		slog.Error("tunnel_upstream_dial_failed", "remote", remote, "exam_id", info.ExamID, "address", address, "error", err.Error())
 		if connectMode {
 			_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
 		} else {
@@ -367,6 +387,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 		return
 	}
 	defer upstreamConn.Close()
+	slog.Info("tunnel_authenticated", "remote", remote, "exam_id", info.ExamID, "session_id", info.SessionID, "connect_mode", connectMode)
 	_ = conn.SetReadDeadline(time.Time{})
 	if connectMode {
 		if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\nProxy-Agent: byod-server\r\n\r\n"); err != nil {

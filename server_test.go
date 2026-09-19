@@ -107,6 +107,23 @@ func TestAdminRequiresToken(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestLoggingHeaders(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request.Header.Set("X-Request-ID", "test-request-id")
+	recorder := httptest.NewRecorder()
+	service.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("healthz: %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("X-Request-ID"); got != "test-request-id" {
+		t.Fatalf("request id header: %q", got)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

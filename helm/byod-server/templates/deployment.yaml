@@ -63,6 +63,10 @@ spec:
           env:
             - name: BYOD_OIDC_ISSUER
               value: {{ .Values.oidc.issuer | quote }}
+            - name: BYOD_LOG_FORMAT
+              value: {{ .Values.logging.format | default "json" | quote }}
+            - name: BYOD_LOG_LEVEL
+              value: {{ .Values.logging.level | default "info" | quote }}
             - name: BYOD_OIDC_CLIENT_ID
               value: {{ .Values.oidc.clientId | quote }}
             - name: BYOD_OIDC_REDIRECT_URL

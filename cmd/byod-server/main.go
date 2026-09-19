@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 )
 
 func main() {
+	configureLogging()
 	listen := flag.String("listen", "127.0.0.1:8787", "listen address")
 	tunnelListen := flag.String("tunnel-listen", "127.0.0.1:8788", "raw BYOD tunnel listen address; empty disables the data plane")
 	tunnelEndpoint := flag.String("tunnel-endpoint", os.Getenv("BYOD_TUNNEL_ENDPOINT"), "public BYOD tunnel host:port advertised to browsers")
@@ -134,4 +136,24 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func configureLogging() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("BYOD_LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	options := &slog.HandlerOptions{Level: level}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BYOD_LOG_FORMAT")), "text") {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, options)))
+		return
+	}
+	// JSON is the default because Kubernetes log collectors can index fields
+	// such as request_id, exam_id, status and duration_ms directly.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, options)))
 }

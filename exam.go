@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -219,10 +220,14 @@ func examErrorStatus(err error) int {
 
 func (s *Service) writeExamError(w http.ResponseWriter, err error) {
 	status := examErrorStatus(err)
+	slog.Warn("exam_request_rejected", "request_id", w.Header().Get("X-Request-ID"),
+		"error", err.Error(), "status", status)
 	s.writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 func (s *Service) writeCompletionError(w http.ResponseWriter, err error) {
+	slog.Warn("exam_completion_failed", "request_id", w.Header().Get("X-Request-ID"),
+		"error", err.Error())
 	if errors.Is(err, ErrExamAlreadyDone) || errors.Is(err, ErrExamEnded) {
 		s.writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 		return

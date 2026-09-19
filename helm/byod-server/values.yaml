@@ -29,6 +29,10 @@ oidc:
   clientSecretKey: client-secret
 adminEmails: ""
 # Comma-separated verified OIDC email addresses that bootstrap as administrators.
+logging:
+  # JSON logs are indexed by Kubernetes log collectors by default.
+  format: json
+  level: info
 database:
   existingSecret: ""
   urlKey: database-url

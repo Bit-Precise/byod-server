@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -601,6 +602,13 @@ func (s *Service) writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	requestID := requestID(r.Header.Get("X-Request-ID"))
+	r = r.WithContext(context.WithValue(r.Context(), requestLogContextKey{}, requestID))
+	w.Header().Set("X-Request-ID", requestID)
+	response := &requestLogWriter{ResponseWriter: w, status: http.StatusOK}
+	defer logHTTPRequest(r, response, started)
+	w = response
 	if s.userAuthRoute(w, r) {
 		return
 	}
@@ -616,10 +624,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-BYOD-Session")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 		w.Header().Add("Vary", "Origin")
 	}
 	if r.Method == http.MethodOptions {
 		if r.Header.Get("Origin") != "grips://exam" {
+			slog.WarnContext(r.Context(), "cors_request_rejected", "request_id", requestID,
+				"origin", r.Header.Get("Origin"), "path", r.URL.Path)
 			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cors_origin_denied"})
 			return
 		}
