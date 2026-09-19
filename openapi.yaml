@@ -77,9 +77,6 @@ paths:
     security: []
     parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
     post: {operationId: issueTunnelTicket, security: [{browserToken: []}], responses: {'201': {description: Exam-window tunnel ticket (reusable by HTTP CONNECT during its TTL; binary preface is single-use; revoked when the session is suspended or ended), content: {application/json: {schema: {$ref: '#/components/schemas/TunnelTicket'}}}}, '409': {description: Session is not active}}}
-  /v1/exam-entry:
-    security: []
-    post: {operationId: resolveExamCode, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamEntryInput'}}}}, responses: {'200': {description: Exam resolved, content: {application/json: {schema: {$ref: '#/components/schemas/ExamEntry'}}}}, '404': {description: Unknown exam code}, '410': {description: Exam ended}}}
   /v1/exams/available:
     security: [{userSession: []}]
     get: {operationId: listAvailableExams, responses: {'200': {description: Exams assigned to the authenticated student, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AvailableExam'}}}}}, '401': {description: Login required}}}
@@ -119,12 +116,10 @@ paths:
 components:
   securitySchemes: {adminToken: {type: apiKey, in: header, name: X-Admin-Token}, userSession: {type: apiKey, in: cookie, name: __Host-byod_user}, browserToken: {type: http, scheme: bearer}}
   schemas:
-    Exam: {type: object, required: [id, exam_code, base_url, state], properties: {id: {type: string}, exam_code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Z0-9]{8}$'}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
-    ExamInput: {type: object, required: [id, base_url], properties: {id: {type: string}, exam_code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$'}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
-    ExamEntryInput: {type: object, required: [exam_code], properties: {exam_code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$'}}}
-    ExamEntry: {type: object, required: [exam_id, exam_code, state], properties: {exam_id: {type: string}, exam_code: {type: string}, state: {type: string}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, base_url: {type: string, format: uri}}}
+    Exam: {type: object, required: [id, base_url, state], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
+    ExamInput: {type: object, required: [id, base_url], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
     AvailableExam: {type: object, required: [id, base_url, state, completed], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, completed: {type: boolean}}}
-    SessionInput: {type: object, required: [exam_id], properties: {exam_id: {type: string}, exam_code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$'}, return_uri: {type: string, format: uri}}}
+    SessionInput: {type: object, required: [exam_id], properties: {exam_id: {type: string}, return_uri: {type: string, format: uri}}}
     SessionBootstrap: {type: object, required: [session_id, attempt_id, browser_session_id, browser_token, authorization_url, state], properties: {session_id: {type: string}, attempt_id: {type: string}, browser_session_id: {type: string}, browser_token: {type: string}, authorization_url: {type: string, format: uri}, state: {type: string}}}
     BrowserSession: {type: object, required: [session_id, exam_id, state], properties: {session_id: {type: string}, exam_id: {type: string}, state: {type: string}, subject: {type: boolean}, violation_count: {type: integer}, last_violation: {type: string}, last_seen_at: {type: integer, format: int64}}}
     ViolationInput: {type: object, required: [type], properties: {type: {type: string}, details: {type: string}}}

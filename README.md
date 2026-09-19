@@ -77,18 +77,12 @@ oci://ghcr.io/bit-precise/charts/byod-server:<chart-version>
 镜像构建阶段会先执行 `admin-ui` 的 OpenAPI client 生成和 production build，再把
 UI 嵌入 Go 二进制；干净 checkout 不依赖本地 `dist` 文件。
 
-学生考试入口：
-
-```bash
-curl -X POST https://exam.cs.ac.cn/v1/exam-entry \\
-  -H 'Content-Type: application/json' \\
-  -d '{"exam_code":"A1B2C3D4"}'
-```
-
-管理后台保存考试后点击“发布”。服务端会为每场考试生成唯一的 8 位大写 Base36
-`exam_code`；学生访问裸 `grips://exam.cs.ac.cn` 输入该 code，不再需要知道内部
-`exam_id`。认证可在开始时间前完成，但 `/start` 直到 `starts_at` 才会成功；到达
-`ends_at` 后在线 session 和 tunnel 都会失效。
+学生考试入口不再使用考试码。管理后台保存考试并配置参加名单后，学生在浏览器
+打开裸 `grips://exam/`，完成 Connect OIDC 登录；浏览器调用
+`GET /v1/exams/available`，只展示该身份被分配的考试，随后以选中的 `exam_id`
+创建作答 session。认证可在开始时间前完成，但 `/start` 直到 `starts_at` 才会成功；
+到达 `ends_at` 后在线 session 和 tunnel 都会失效。数据库中的旧 `exam_code` 列仅
+为迁移兼容保留，不会返回给浏览器或管理员 API。
 
 获取考试配置：
 
@@ -106,7 +100,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/browser/login` | 启动浏览器级 Connect authorization-code + PKCE 登录 |
-| POST | `/v1/exam-entry` | 用 8 位 Base36 识别码解析已发布考试 |
+| GET | `/v1/exams/available` | 按当前 OIDC 身份列出被分配的考试 |
 | GET | `/{exam_id}/.well-known/byod-configuration` | 读取 OIDC、策略和考试代理信息 |
 | POST | `/v1/sessions` | 创建会话，返回登录 URL 和会话 ID |
 | GET | `/oidc/callback` | OIDC 回调；服务端交换 code，不把 IdP token 返回浏览器 |

@@ -1169,11 +1169,8 @@ function ExamsPage({
                 >
                   <TableCell>
                     <p className="font-medium text-slate-900">{exam.id}</p>
-                    <p className="font-mono text-xs font-semibold tracking-widest text-indigo-600">
-                      Code: {exam.exam_code}
-                    </p>
                     <p className="text-xs text-slate-500">
-                      grips://exam.cs.ac.cn
+                      学生登录后从已分配考试中选择
                     </p>
                   </TableCell>
                   <TableCell className="max-w-xs truncate text-slate-600">
@@ -1745,7 +1742,6 @@ function ExamDialog({
   onSaved: () => void;
 }) {
   const [id, setId] = useState("");
-  const [examCode, setExamCode] = useState("");
   const [baseURL, setBaseURL] = useState("");
   const [state, setState] = useState<Exam["state"]>("draft");
   const [starts, setStarts] = useState("");
@@ -1758,7 +1754,6 @@ function ExamDialog({
   useEffect(() => {
     if (!open) return;
     setId(exam?.id || "");
-    setExamCode(exam?.exam_code || "");
     setBaseURL(exam?.base_url || "");
     setState(exam?.state || "draft");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
@@ -1817,7 +1812,6 @@ function ExamDialog({
     setSaving(true);
     const body = {
       id: id.trim(),
-      exam_code: examCode.trim().toUpperCase() || undefined,
       base_url: baseURL.trim(),
       state,
       starts_at: starts ? new Date(starts).toISOString() : null,
@@ -1885,18 +1879,6 @@ function ExamDialog({
               ]}
             />
           </div>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="exam-code">考试识别码（8 位 Base36）</Label>
-          <Input
-            id="exam-code"
-            value={examCode}
-            maxLength={8}
-            onChange={(event) => setExamCode(event.target.value.toUpperCase())}
-            placeholder="保存时自动生成"
-            className="font-mono tracking-widest"
-          />
-          <p className="text-xs text-slate-500">学生在 grips://exam.cs.ac.cn 中输入此识别码。</p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="exam-base">源站 Base URL</Label>

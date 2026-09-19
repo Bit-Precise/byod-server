@@ -385,22 +385,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/exam-entry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resolveExamCode"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/exams/available": {
         parameters: {
             query?: never;
@@ -581,7 +565,6 @@ export interface components {
     schemas: {
         Exam: {
             id: string;
-            exam_code: string;
             /** Format: uri */
             base_url: string;
             /** @enum {string} */
@@ -596,7 +579,6 @@ export interface components {
         };
         ExamInput: {
             id: string;
-            exam_code?: string;
             /** Format: uri */
             base_url: string;
             /** @enum {string} */
@@ -608,20 +590,6 @@ export interface components {
             policy?: {
                 [key: string]: unknown;
             };
-        };
-        ExamEntryInput: {
-            exam_code: string;
-        };
-        ExamEntry: {
-            exam_id: string;
-            exam_code: string;
-            state: string;
-            /** Format: date-time */
-            starts_at?: string | null;
-            /** Format: date-time */
-            ends_at?: string | null;
-            /** Format: uri */
-            base_url?: string;
         };
         AvailableExam: {
             id: string;
@@ -637,7 +605,6 @@ export interface components {
         };
         SessionInput: {
             exam_id: string;
-            exam_code?: string;
             /** Format: uri */
             return_uri?: string;
         };
@@ -1486,44 +1453,6 @@ export interface operations {
             };
             /** @description Session is not active */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    resolveExamCode: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExamEntryInput"];
-            };
-        };
-        responses: {
-            /** @description Exam resolved */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExamEntry"];
-                };
-            };
-            /** @description Unknown exam code */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Exam ended */
-            410: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -19,8 +19,11 @@ type PostgresStore struct {
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 type StoredExam struct {
-	ID        string         `json:"id"`
-	ExamCode  string         `json:"exam_code"`
+	ID string `json:"id"`
+	// ExamCode is retained in the durable model only for migrations from the
+	// former code-entry flow. It is deliberately not part of any API response;
+	// students choose from the exams assigned to their OIDC identity.
+	ExamCode  string         `json:"-"`
 	BaseURL   string         `json:"base_url"`
 	State     string         `json:"state"`
 	StartsAt  *time.Time     `json:"starts_at,omitempty"`
@@ -29,9 +32,8 @@ type StoredExam struct {
 	UpdatedAt string         `json:"updated_at,omitempty"`
 }
 
-// AvailableExam is the student-facing projection. Exam codes remain an
-// administrator/instructor concept; students select an exam after OIDC based
-// on their durable participant assignment.
+// AvailableExam is the student-facing projection. Students select an exam
+// after OIDC based on their durable participant assignment.
 type AvailableExam struct {
 	ID        string     `json:"id"`
 	BaseURL   string     `json:"base_url"`

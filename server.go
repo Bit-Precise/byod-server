@@ -392,7 +392,6 @@ func (s *Service) configuration(examID string) map[string]any {
 		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
 	if s.ExamStore != nil {
 		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
-			exam["exam_code"] = stored.ExamCode
 			exam["state"] = stored.State
 			exam["starts_at"] = stored.StartsAt
 			exam["ends_at"] = stored.EndsAt
@@ -1047,7 +1046,6 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		var input struct {
 			ID       string         `json:"id"`
-			ExamCode string         `json:"exam_code"`
 			BaseURL  string         `json:"base_url"`
 			State    string         `json:"state"`
 			StartsAt *time.Time     `json:"starts_at"`
@@ -1058,7 +1056,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		if err := s.ExamStore.UpsertExamDetailsWithCode(r.Context(), input.ID, input.ExamCode, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+		if err := s.ExamStore.UpsertExamDetails(r.Context(), input.ID, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
@@ -1192,7 +1190,6 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodPatch {
 			var input struct {
-				ExamCode string         `json:"exam_code"`
 				BaseURL  string         `json:"base_url"`
 				State    string         `json:"state"`
 				StartsAt *time.Time     `json:"starts_at"`
@@ -1203,7 +1200,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			if err := s.ExamStore.UpsertExamDetailsWithCode(r.Context(), parts[3], input.ExamCode, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+			if err := s.ExamStore.UpsertExamDetails(r.Context(), parts[3], input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
@@ -1376,61 +1373,23 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/v1/exam-entry" {
-		var input struct {
-			ExamCode string `json:"exam_code"`
-		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&input); err != nil || !validExamCode(normalizeExamCode(input.ExamCode)) {
-			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_code"})
-			return
-		}
-		exam, err := s.examForCode(r.Context(), input.ExamCode)
-		if err != nil {
-			s.writeExamError(w, err)
-			return
-		}
-		if _, err := s.examWindow(r.Context(), exam.ID, gateAuthenticate); err != nil {
-			s.writeExamError(w, err)
-			return
-		}
-		s.writeJSON(w, http.StatusOK, map[string]any{
-			"exam_id": exam.ID, "exam_code": exam.ExamCode, "state": exam.State,
-			"starts_at": exam.StartsAt, "ends_at": exam.EndsAt,
-			"base_url": exam.BaseURL,
-		})
+		// The student-facing code-entry flow was removed. Exam discovery is
+		// identity-based: OIDC login followed by GET /v1/exams/available.
+		s.writeJSON(w, http.StatusGone, map[string]string{"error": "exam_code_entry_removed", "message": "sign in with Connect to choose an assigned exam"})
 		return
 	}
 	if r.URL.Path == "/v1/sessions" {
 		var input struct {
 			ExamID    string `json:"exam_id"`
-			ExamCode  string `json:"exam_code"`
 			ReturnURI string `json:"return_uri"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input); err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_id"})
 			return
 		}
-		if input.ExamID == "" && input.ExamCode != "" {
-			exam, err := s.examForCode(r.Context(), input.ExamCode)
-			if err != nil {
-				s.writeExamError(w, err)
-				return
-			}
-			input.ExamID = exam.ID
-		}
 		if !validExamID(input.ExamID) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam_id"})
 			return
-		}
-		if input.ExamCode != "" && s.ExamStore != nil {
-			exam, codeErr := s.examForCode(r.Context(), input.ExamCode)
-			if codeErr != nil || exam.ID != input.ExamID {
-				if codeErr != nil {
-					s.writeExamError(w, codeErr)
-				} else {
-					s.writeJSON(w, http.StatusConflict, map[string]string{"error": "exam_code_mismatch"})
-				}
-				return
-			}
 		}
 		if _, err := s.examWindow(r.Context(), input.ExamID, gateAuthenticate); err != nil {
 			s.writeExamError(w, err)
@@ -1442,16 +1401,19 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 		// issuing an authenticated exam session.
 		authenticatedSubject := ""
 		if s.ExamStore != nil {
-			if user, _, userErr := s.currentUser(r); userErr == nil {
-				if user.Subject == nil || strings.TrimSpace(*user.Subject) == "" {
-					s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identity_not_bound"})
-					return
-				}
-				authenticatedSubject = *user.Subject
-				if eligibilityErr := s.checkStudentEligibility(r.Context(), input.ExamID, authenticatedSubject); eligibilityErr != nil {
-					s.writeExamError(w, eligibilityErr)
-					return
-				}
+			user, _, userErr := s.currentUser(r)
+			if userErr != nil {
+				s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login_required"})
+				return
+			}
+			if user.Subject == nil || strings.TrimSpace(*user.Subject) == "" {
+				s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "identity_not_bound"})
+				return
+			}
+			authenticatedSubject = *user.Subject
+			if eligibilityErr := s.checkStudentEligibility(r.Context(), input.ExamID, authenticatedSubject); eligibilityErr != nil {
+				s.writeExamError(w, eligibilityErr)
+				return
 			}
 		}
 		if input.ReturnURI != "" {
