@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ func main() {
 	upstream := flag.String("upstream", "http://127.0.0.1:9000", "fixed exam upstream")
 	databaseURL := flag.String("database-url", os.Getenv("BYOD_DATABASE_URL"), "PostgreSQL connection URL for exam metadata")
 	adminToken := flag.String("admin-token", os.Getenv("BYOD_ADMIN_TOKEN"), "administrator API token")
+	adminEmails := flag.String("admin-emails", os.Getenv("BYOD_ADMIN_EMAILS"), "comma-separated verified OIDC emails allowed to bootstrap administrators")
 	oidcIssuer := flag.String("oidc-issuer", os.Getenv("BYOD_OIDC_ISSUER"), "OIDC issuer URL")
 	oidcClientID := flag.String("oidc-client-id", os.Getenv("BYOD_OIDC_CLIENT_ID"), "OIDC client ID")
 	oidcClientSecret := flag.String("oidc-client-secret", os.Getenv("BYOD_OIDC_CLIENT_SECRET"), "OIDC client secret")
@@ -58,12 +60,20 @@ func main() {
 		service.TunnelEndpoint = *tunnelEndpoint
 	}
 	service.AdminToken = *adminToken
+	for _, email := range strings.Split(*adminEmails, ",") {
+		if normalized, err := server.NormalizeEmailForConfig(email); err == nil {
+			service.AdminEmails[normalized] = true
+		}
+	}
 	if *databaseURL != "" {
 		store, storeErr := server.OpenPostgresStore(context.Background(), *databaseURL)
 		if storeErr != nil {
 			log.Fatal(storeErr)
 		}
 		service.ExamStore = store
+		for email := range service.AdminEmails {
+			store.AdminEmails[email] = true
+		}
 		defer store.Close()
 	}
 	if *policyFile != "" {

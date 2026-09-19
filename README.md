@@ -53,8 +53,8 @@ helm upgrade --install byod helm/byod-server \
   --set oidc.existingSecret=byod-oidc
 ```
 
-访问 `/admin/` 打开管理员后台，使用 `X-Admin-Token` 对应的 token 登录。
-后台提供考试、源站、策略、学生名单、session 和审计日志管理。配置了考试名单后只允许名单内学生参加；空名单也按拒绝参加处理，避免误把尚未配置的考试公开。
+访问 `/admin/` 打开管理员后台，使用 Connect OIDC 登录。只有 `admin` 角色用户可以访问控制中心；首次部署通过 `BYOD_ADMIN_EMAILS`（Helm 的 `adminEmails`）指定可自动成为管理员的已验证邮箱。普通学生和管理员均使用同一 OIDC 用户目录。
+后台提供考试、全局用户、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把全局用户加入考试名单；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
@@ -120,17 +120,21 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发考试窗口内有效的 tunnel ticket；HTTP CONNECT 在 TTL 内可复用，二进制 preface 单次使用；session suspend/end 会立即失效 |
 | ANY | `/{exam_id}/{path}` | 旧 HTTP Bearer 代理（仅兼容联调，透明 tunnel 不使用） |
 
-管理员 API（均需 `X-Admin-Token`）：
+管理员 API（均需 OIDC 管理员 session 和 CSRF token）：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET/POST | `/admin/api/exams` | 列出/创建考试 |
 | POST | `/admin/api/exams/{id}/publish` | 发布考试并根据时间窗口设置 scheduled/active |
 | GET/PATCH/DELETE | `/admin/api/exams/{id}` | 查看/编辑/删除考试及策略 |
-| GET/PUT/DELETE | `/admin/api/exams/{id}/students/{subject}` | 管理考试学生名单 |
+| GET/PUT/DELETE | `/admin/api/exams/{id}/participants/{user_id}` | 从全局用户目录管理考试参加资格 |
 | GET | `/admin/api/sessions` 或 `/admin/api/exams/{id}/sessions` | 查看在线作答 session |
 | GET/POST | `/admin/api/sessions/{id}` | 查看或暂停/恢复 session |
 | GET | `/admin/api/events` | 查询全局审计事件 |
+| GET/POST | `/admin/api/users` | 按邮箱查询/预先建立全局用户 |
+| GET/PATCH | `/admin/api/users/{user_id}` | 查看、启停用户和调整角色 |
+| GET/PUT/DELETE | `/admin/api/exams/{id}/participants/{user_id}` | 从全局用户目录配置考试参加资格 |
+| GET | `/admin/api/user-audit` | 查询用户和权限审计日志 |
 
 会话接口使用 `Authorization: Bearer <browser_session_token>`。服务端不会信任浏览器自行提交的用户身份。旧 HTTP Bearer 代理（仅兼容联调）可生成
 `X-BYOD-Subject`/`X-BYOD-Session`，透明 BYOD Tunnel 数据面不终止 TLS、也不注入

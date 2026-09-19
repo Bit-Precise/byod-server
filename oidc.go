@@ -23,6 +23,14 @@ type OIDCAuthenticator struct {
 	Verifier     *oidc.IDTokenVerifier
 }
 
+type OIDCIdentity struct {
+	Issuer        string
+	Subject       string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+}
+
 func NewOIDCAuthenticator(ctx context.Context, issuer, clientID, clientSecret, redirectURL string) (*OIDCAuthenticator, error) {
 	if issuer == "" || clientID == "" || redirectURL == "" {
 		return nil, errors.New("OIDC issuer, client ID, and redirect URL are required")
@@ -40,6 +48,16 @@ func NewOIDCAuthenticator(ctx context.Context, issuer, clientID, clientSecret, r
 	auth.OAuth2 = oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: provider.Endpoint(), RedirectURL: redirectURL,
 		Scopes: []string{oidc.ScopeOpenID}}
 	auth.Verifier = provider.Verifier(&oidc.Config{ClientID: clientID})
+	var discovery struct {
+		Scopes []string `json:"scopes_supported"`
+	}
+	if provider.Claims(&discovery) == nil {
+		for _, scope := range discovery.Scopes {
+			if scope == "email" || scope == "profile" {
+				auth.OAuth2.Scopes = append(auth.OAuth2.Scopes, scope)
+			}
+		}
+	}
 	return auth, nil
 }
 
@@ -61,25 +79,47 @@ func (a *OIDCAuthenticator) authorizationURL(state, verifier string) string {
 }
 
 func (a *OIDCAuthenticator) exchange(ctx context.Context, code, verifier string) (string, error) {
+	identity, err := a.exchangeIdentity(ctx, code, verifier, "")
+	return identity.Subject, err
+}
+
+func (a *OIDCAuthenticator) exchangeIdentity(ctx context.Context, code, verifier, nonce string) (OIDCIdentity, error) {
+	var identity OIDCIdentity
 	token, err := a.OAuth2.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
-		return "", err
+		return identity, err
 	}
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
-		return "", errors.New("OIDC response did not contain id_token")
+		return identity, errors.New("OIDC response did not contain id_token")
 	}
 	idToken, err := a.Verifier.Verify(ctx, raw)
 	if err != nil {
-		return "", err
+		return identity, err
 	}
-	var claims struct {
-		Subject string `json:"sub"`
+	if nonce != "" && idToken.Nonce != nonce {
+		return identity, errors.New("OIDC nonce mismatch")
 	}
-	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" {
-		return "", errors.New("OIDC id_token has no subject")
+	if err := idToken.Claims(&identity); err != nil || identity.Subject == "" {
+		return identity, errors.New("OIDC id_token has no subject")
 	}
-	return claims.Subject, nil
+	identity.Issuer = idToken.Issuer
+	// Some providers expose email only on UserInfo. Never trust its claims
+	// unless its subject matches the verified ID token.
+	if !identity.EmailVerified || identity.Email == "" {
+		if info, err := a.Provider.UserInfo(ctx, oauth2.StaticTokenSource(token)); err == nil && info.Subject == identity.Subject {
+			if info.EmailVerified {
+				identity.Email, identity.EmailVerified = info.Email, true
+			}
+			var profile struct {
+				Name string `json:"name"`
+			}
+			if info.Claims(&profile) == nil && identity.Name == "" {
+				identity.Name = profile.Name
+			}
+		}
+	}
+	return identity, nil
 }
 
 // cryptoRandRead is a variable to keep unit tests independent of a global

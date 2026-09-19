@@ -115,11 +115,12 @@ type Exam = components["schemas"]["Exam"];
 type Student = components["schemas"]["Student"];
 type Session = components["schemas"]["Session"];
 type Event = components["schemas"]["Event"];
-type Section = "overview" | "exams" | "students" | "sessions" | "audit";
+type Section = "overview" | "exams" | "users" | "students" | "sessions" | "audit";
 
 const navItems: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "overview", label: "总览", icon: LayoutDashboard },
   { id: "exams", label: "考试管理", icon: ClipboardList },
+  { id: "users", label: "用户管理", icon: Users },
   { id: "students", label: "学生名单", icon: Users },
   { id: "sessions", label: "在线 Session", icon: Activity },
   { id: "audit", label: "审计日志", icon: FileText },
@@ -161,18 +162,13 @@ function StateBadge({ state }: { state: string }) {
 }
 
 function App() {
-  const [token, setToken] = useState(
-    () => {
-      const value = localStorage.getItem("byod.admin_token") || "";
-      return /^[\x21-\x7e]+$/.test(value.trim()) ? value.trim() : "";
-    },
-  );
-  const [draftToken, setDraftToken] = useState(token);
-  const [authMessage, setAuthMessage] = useState("");
+  const [user, setUser] = useState<components["schemas"]["User"] | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [section, setSection] = useState<Section>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [exams, setExams] = useState<Exam[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
+  const [users, setUsers] = useState<components["schemas"]["User"][]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
@@ -209,30 +205,32 @@ function App() {
     }
     setEvents((result.data || []) as Event[]);
   }, []);
+  const loadUsers = useCallback(async () => {
+    const result = await api.GET("/admin/api/users");
+    if (!result.error) setUsers((result.data || []) as components["schemas"]["User"][]);
+  }, []);
   const refresh = useCallback(async () => {
     setBusy(true);
     setError("");
-    await Promise.all([loadExams(), loadSessions(), loadEvents()]);
+    await Promise.all([loadExams(), loadSessions(), loadEvents(), loadUsers()]);
     setBusy(false);
-  }, [loadEvents, loadExams, loadSessions]);
+  }, [loadEvents, loadExams, loadSessions, loadUsers]);
   useEffect(() => {
-    if (token) void refresh();
-  }, [refresh, token]);
-  useEffect(() => {
-    const handleInvalidToken = () => {
-      setToken("");
-      setDraftToken("");
-      setAuthMessage("管理员 Token 包含非法字符，已清除，请重新粘贴 Token。");
-    };
-    window.addEventListener("byod:invalid-token", handleInvalidToken);
-    return () => window.removeEventListener("byod:invalid-token", handleInvalidToken);
-  }, []);
+    void api.GET("/auth/me").then((result) => {
+      if (!result.error && result.data?.user.role === "admin") {
+        localStorage.setItem("byod.csrf_token", result.data.csrf_token);
+        setUser(result.data.user as components["schemas"]["User"]);
+        void refresh();
+      }
+      setAuthLoading(false);
+    });
+  }, [refresh]);
   const loadStudents = useCallback(async (exam: Exam) => {
     setSelectedExam(exam);
-    const result = await api.GET("/admin/api/exams/{examId}/students", {
+    const result = await api.GET("/admin/api/exams/{examId}/participants", {
       params: { path: { examId: exam.id } },
     });
-    if (!result.error) setStudents((result.data || []) as Student[]);
+    if (!result.error) setStudents(((result.data || []) as components["schemas"]["Participant"][]).map((item) => ({subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled})));
   }, []);
   const openSection = (next: Section) => {
     setSection(next);
@@ -241,9 +239,10 @@ function App() {
     if (next === "audit") void loadEvents();
   };
   const logout = () => {
-    localStorage.removeItem("byod.admin_token");
-    setToken("");
-    setDraftToken("");
+    void api.POST("/auth/logout", { body: undefined }).finally(() => {
+      localStorage.removeItem("byod.csrf_token");
+      setUser(null);
+    });
   };
   const removeExam = async (exam: Exam) => {
     const result = await api.DELETE("/admin/api/exams/{examId}", {
@@ -295,22 +294,11 @@ function App() {
       items.map((item) => (item.id === next.id ? next : item)),
     );
   };
-  if (!token)
+  if (authLoading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">正在验证 Connect 登录…</div>;
+  if (!user)
     return (
       <LoginScreen
-        draftToken={draftToken}
-        setDraftToken={setDraftToken}
-        message={authMessage}
-        onLogin={() => {
-          const value = draftToken.trim();
-          if (value && /^[\x21-\x7e]+$/.test(value)) {
-            localStorage.setItem("byod.admin_token", value);
-            setAuthMessage("");
-            setToken(value);
-          } else if (value) {
-            setAuthMessage("Token 只能包含 ASCII 字符，请检查复制的内容。");
-          }
-        }}
+        onLogin={() => { window.location.href = "/auth/login?return_to=/admin/"; }}
       />
     );
   const activeSessions = sessions.filter(
@@ -431,8 +419,9 @@ function App() {
               }}
             />
           )}
+          {section === "users" && <UsersPage users={users} onRefresh={() => void loadUsers()} />}
           {section === "students" && (
-            <StudentsPage
+              <StudentsPage
               exams={exams}
               selected={selectedExam}
               students={students}
@@ -595,17 +584,7 @@ function SidebarNav({
   );
 }
 
-function LoginScreen({
-  draftToken,
-  setDraftToken,
-  message,
-  onLogin,
-}: {
-  draftToken: string;
-  setDraftToken: (value: string) => void;
-  message: string;
-  onLogin: () => void;
-}) {
+function LoginScreen({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
       <div className="absolute inset-0 overflow-hidden">
@@ -625,48 +604,14 @@ function LoginScreen({
               考试管理后台
             </CardTitle>
             <CardDescription className="mt-2 text-slate-400">
-              使用管理员 token 访问控制中心
+              使用 Connect OIDC 登录；只有管理员角色可以进入控制中心
             </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onLogin();
-            }}
-          >
-            <Label className="text-slate-300">
-              管理员 Token
-              <Input
-                autoFocus
-                type="password"
-                value={draftToken}
-                onChange={(event) => setDraftToken(event.target.value)}
-                placeholder="粘贴部署时生成的 token"
-                className="mt-2 border-slate-700 bg-slate-950 text-white"
-              />
-            </Label>
-            <Button
-              type="submit"
-              className="h-10 w-full bg-indigo-500 hover:bg-indigo-400"
-            >
-              进入控制中心
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </form>
-          {message && (
-            <Alert variant="destructive" className="mt-4">
-              <AlertTriangle className="h-4 w-4" />
-              <AlertDescription className="whitespace-pre-line text-red-700">
-                {message}
-              </AlertDescription>
-            </Alert>
-          )}
-          <p className="mt-5 text-center text-xs text-slate-500">
-            Token 仅保存在当前浏览器的本地存储中
-          </p>
+          <Button type="button" className="h-10 w-full bg-indigo-500 hover:bg-indigo-400" onClick={onLogin}>
+            使用 Connect 登录 <ArrowRight className="h-4 w-4" />
+          </Button>
         </CardContent>
       </Card>
     </div>
@@ -1247,6 +1192,34 @@ function StudentsPage({
     </>
   );
 }
+
+function UsersPage({users, onRefresh}: {users: components["schemas"]["User"][]; onRefresh: () => void}) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<"student" | "admin">("student");
+  const [saving, setSaving] = useState(false);
+  const invite = async (event: FormEvent) => {
+    event.preventDefault(); setSaving(true);
+    const result = await api.POST("/admin/api/users", {body: {email: email.trim(), display_name: name.trim(), role}});
+    setSaving(false);
+    if (result.error) { toast.add({title: "添加用户失败", description: "邮箱可能已经存在，或格式不正确。", type: "error"}); return; }
+    setEmail(""); setName(""); toast.add({title: "用户已加入全局用户库", type: "success"}); onRefresh();
+  };
+  const update = async (user: components["schemas"]["User"], patch: {enabled?: boolean; role?: "student"|"admin"}) => {
+    const result = await api.PATCH("/admin/api/users/{userId}", {params: {path: {userId: user.id}}, body: patch});
+    if (result.error) toast.add({title: "更新用户失败", type: "error"}); else onRefresh();
+  };
+  return <>
+    <PageHeading title="全局用户管理" description="按邮箱预先建档；用户首次通过 Connect OIDC 登录后自动绑定 subject。" />
+    <Card className="mb-6"><CardHeader><CardTitle>预先添加用户</CardTitle><CardDescription>邮箱必须来自 OIDC 返回的已验证 email claim。</CardDescription></CardHeader><CardContent><form className="grid gap-3 sm:grid-cols-[1fr_1fr_160px_auto]" onSubmit={(e) => void invite(e)}>
+      <Input type="email" required placeholder="student@example.edu.cn" value={email} onChange={e=>setEmail(e.target.value)} />
+      <Input placeholder="显示名称（可选）" value={name} onChange={e=>setName(e.target.value)} />
+      <SelectField value={role} onValueChange={v=>setRole(v as "student"|"admin")} options={[{value:"student",label:"学生"},{value:"admin",label:"管理员"}]} />
+      <Button type="submit" disabled={saving}>{saving ? "添加中…" : "添加用户"}</Button>
+    </form></CardContent></Card>
+    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>管理员账号可进入控制中心；停用用户会立即失效其管理会话和考试资格。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>角色</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="font-medium">{user.display_name || "未命名"}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.role === "admin" ? "warning" : "secondary"}>{user.role === "admin" ? "管理员" : "学生"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{role:user.role === "admin" ? "student" : "admin"})}>{user.role === "admin" ? "降为学生" : "设为管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={6} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+  </>;
+}
 function StudentRow({
   student,
   examId,
@@ -1258,9 +1231,9 @@ function StudentRow({
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const toggle = async () => {
-    const result = await api.PUT("/admin/api/exams/{examId}/students/{subject}", {
-      params: { path: { examId, subject: student.subject } },
-      body: { display_name: student.display_name, enabled: !student.enabled },
+    const result = await api.PUT("/admin/api/exams/{examId}/participants/{userId}", {
+      params: { path: { examId, userId: student.subject } },
+      body: { enabled: !student.enabled },
     });
     if (result.error) {
       toast.add({ title: "更新学生失败", description: student.subject, type: "error" });
@@ -1270,8 +1243,8 @@ function StudentRow({
     onChanged();
   };
   const remove = async () => {
-    const result = await api.DELETE("/admin/api/exams/{examId}/students/{subject}", {
-      params: { path: { examId, subject: student.subject } },
+    const result = await api.DELETE("/admin/api/exams/{examId}/participants/{userId}", {
+      params: { path: { examId, userId: student.subject } },
     });
     if (result.error) {
       toast.add({ title: "移除学生失败", type: "error" });
@@ -1837,10 +1810,10 @@ function StudentDialog({
     if (!exam || !subject.trim()) return;
     setSaving(true);
     const result = await api.PUT(
-      "/admin/api/exams/{examId}/students/{subject}",
+      "/admin/api/exams/{examId}/participants/{userId}",
       {
-        params: { path: { examId: exam.id, subject: subject.trim() } },
-        body: { display_name: name.trim(), enabled: true },
+        params: { path: { examId: exam.id, userId: subject.trim() } },
+        body: { enabled: true },
       },
     );
     setSaving(false);
@@ -1864,15 +1837,15 @@ function StudentDialog({
     >
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <div className="space-y-2">
-          <Label htmlFor="student-subject">OIDC Subject</Label>
+          <Label htmlFor="student-subject">全局用户 ID</Label>
           <Input
             id="student-subject"
             value={subject}
             onChange={(event) => setSubject(event.target.value)}
-            placeholder="填写 ID Token 的 sub claim"
+            placeholder="从用户管理复制用户 ID"
           />
           <p className="text-xs text-slate-500">
-            必须填写 OIDC ID Token 中的 sub 原值，不是昵称。
+            先在“用户管理”按邮箱添加用户，再把用户 ID 加入考试名单。
           </p>
         </div>
         <div className="space-y-2">

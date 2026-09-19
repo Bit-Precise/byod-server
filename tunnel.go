@@ -428,6 +428,12 @@ func (s *Service) tunnelSessionActive(sessionID string) bool {
 	if !active {
 		return false
 	}
+	if s.ExamStore != nil {
+		allowed, err := s.ExamStore.UserAccess(context.Background(), s.identityIssuer(), session.Subject, examID)
+		if err != nil || !allowed {
+			return false
+		}
+	}
 	if _, err := s.examWindow(context.Background(), examID, gateActive); err != nil {
 		_ = s.endWithReason(context.Background(), session, "ends_at")
 		return false

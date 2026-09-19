@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-type PostgresStore struct{ db *sql.DB }
+type PostgresStore struct {
+	db          *sql.DB
+	AdminEmails map[string]bool
+}
 
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
@@ -56,7 +59,7 @@ func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore,
 		_ = db.Close()
 		return nil, err
 	}
-	return &PostgresStore{db: db}, nil
+	return &PostgresStore{db: db, AdminEmails: make(map[string]bool)}, nil
 }
 
 // MigratePostgres applies the schema required by the BYOD server. Migrations
@@ -85,7 +88,7 @@ ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS exam_code CHAR(8);ALTER TABLE by
 UPDATE byod_exams SET exam_code=upper(substr(md5(exam_id),1,8)) WHERE exam_code IS NULL OR btrim(exam_code)='';
 ALTER TABLE byod_exams ALTER COLUMN exam_code SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS byod_exams_exam_code_idx ON byod_exams(exam_code);
-INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;`)
+INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;`+userSchema)
 	return err
 }
 func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
@@ -288,12 +291,15 @@ func (s *PostgresStore) RecordCompletion(ctx context.Context, examID, subject, s
 
 // ActivateSession rechecks the exam window, roster and completion in one DB
 // transaction. A waiting session cannot race another session's submission.
-func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, subject string) error {
+func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, subject, issuer string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err = lockUsers(ctx, tx); err != nil {
+		return err
+	}
 	var state string
 	var start, end *time.Time
 	if err = tx.QueryRowContext(ctx, `SELECT state,starts_at,ends_at FROM byod_exams WHERE exam_id=$1 FOR UPDATE`, examID).Scan(&state, &start, &end); err != nil {
@@ -310,7 +316,7 @@ func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, 
 		return ErrExamNotStarted
 	}
 	var allowed, completed bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_students WHERE exam_id=$1 AND subject=$2 AND enabled), EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, examID, subject).Scan(&allowed, &completed); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_participants p JOIN byod_users u ON p.user_id=u.id WHERE p.exam_id=$1 AND u.subject=$2 AND u.issuer=$3 AND p.enabled AND u.enabled), EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, examID, subject, issuer).Scan(&allowed, &completed); err != nil {
 		return err
 	}
 	if completed {

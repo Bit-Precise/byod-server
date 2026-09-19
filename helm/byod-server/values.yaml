@@ -27,6 +27,7 @@ oidc:
   redirectUrl: https://exam.cs.ac.cn/oidc/callback
   existingSecret: ""
   clientSecretKey: client-secret
+adminEmails: ""
 database:
   existingSecret: ""
   urlKey: database-url

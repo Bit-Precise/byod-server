@@ -54,6 +54,9 @@ spec:
             - --exam-origin={{ .Values.examOrigin }}
             - --upstream={{ .Values.upstream }}
             - --policy-file={{ .Values.policyFile }}
+            {{- if .Values.adminEmails }}
+            - --admin-emails={{ .Values.adminEmails }}
+            {{- end }}
             {{- if .Values.devAuth }}
             - --dev-auth
             {{- end }}

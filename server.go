@@ -115,6 +115,7 @@ type Service struct {
 	OIDC            *OIDCAuthenticator
 	DevAuth         bool
 	AdminToken      string
+	AdminEmails     map[string]bool
 	PolicyOverrides map[string]map[string]any
 	mu              sync.RWMutex
 	sessions        map[string]*Session
@@ -152,7 +153,8 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 		TunnelEndpoint: "127.0.0.1:8788",
 		ExamUpstreams:  make(map[string]*url.URL),
 		PolicySecret:   secret, OIDCAuthorize: "https://idp.example/authorize",
-		sessions: make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent),
+		AdminEmails: make(map[string]bool),
+		sessions:    make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent),
 		tunnelTickets: make(map[string]*tunnelTicket), browserLogins: make(map[string]*browserLoginState), completions: make(map[string]time.Time)}, nil
 }
 
@@ -460,9 +462,14 @@ func (s *Service) finishBrowserLogin(w http.ResponseWriter, r *http.Request, sta
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_browser_login_callback"})
 		return true
 	}
-	if s.OIDC != nil && !s.DevAuth {
-		if _, err := s.OIDC.exchange(r.Context(), code, pending.CodeVerifier); err != nil {
-			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "oidc_exchange_failed"})
+	identity, err := s.identityFromCode(r.Context(), code, pending.CodeVerifier, "")
+	if err != nil {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "oidc_exchange_failed"})
+		return true
+	}
+	if s.ExamStore != nil {
+		if _, err := s.ExamStore.ResolveIdentity(r.Context(), identity); err != nil {
+			s.userError(w, err)
 			return true
 		}
 	}
@@ -524,11 +531,11 @@ func (s *Service) checkStudentEligibility(ctx context.Context, examID, subject s
 		return nil
 	}
 	if s.ExamStore != nil {
-		configured, enabled, err := s.ExamStore.StudentAccess(ctx, examID, subject)
+		allowed, err := s.ExamStore.UserAccess(ctx, s.identityIssuer(), subject, examID)
 		if err != nil {
 			return err
 		}
-		if configured && !enabled {
+		if !allowed {
 			return ErrExamStudentDenied
 		}
 	}
@@ -559,6 +566,12 @@ func (s *Service) enforceIdleTimeout(session *Session) bool {
 	if session == nil {
 		return false
 	}
+	if s.ExamStore != nil {
+		allowed, err := s.ExamStore.UserAccess(context.Background(), s.identityIssuer(), session.Subject, session.ExamID)
+		if err != nil || !allowed {
+			return false
+		}
+	}
 	_, maxIdle := s.sessionLimits(session.ExamID)
 	s.mu.Lock()
 	suspended := false
@@ -588,6 +601,9 @@ func (s *Service) writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.userAuthRoute(w, r) {
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
 		s.adminAPI(w, r)
 		return
@@ -633,6 +649,11 @@ func examIDFromWellKnown(requestPath string) string {
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/account" || strings.HasPrefix(r.URL.Path, "/account/") {
+		r.URL.Path = "/admin/"
+		serveAdminUI(w, r)
+		return
+	}
 	if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
 		serveAdminUI(w, r)
 		return
@@ -676,6 +697,9 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/oidc/callback" {
 		state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
+		if s.finishUserLogin(w, r, state, code) {
+			return
+		}
 		if s.finishBrowserLogin(w, r, state, code) {
 			return
 		}
@@ -697,9 +721,11 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var subject string
+		var identity OIDCIdentity
 		if s.OIDC != nil && !s.DevAuth {
 			var err error
-			subject, err = s.OIDC.exchange(r.Context(), code, codeVerifier)
+			identity, err = s.OIDC.exchangeIdentity(r.Context(), code, codeVerifier, "")
+			subject = identity.Subject
 			if err != nil {
 				s.mu.Lock()
 				if current := s.sessions[state]; current != nil && current.State == "authenticating" {
@@ -710,7 +736,19 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
+			identity = OIDCIdentity{Issuer: s.identityIssuer(), Subject: "oidc:" + code}
 			subject = "oidc:" + code
+		}
+		if s.ExamStore != nil {
+			identity.Issuer = s.identityIssuer()
+			if _, err := s.ExamStore.ResolveIdentity(r.Context(), identity); err != nil {
+				if errors.Is(err, ErrUserDisabled) || errors.Is(err, ErrIdentityConflict) {
+					s.userError(w, err)
+				} else {
+					s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user_identity_unavailable"})
+				}
+				return
+			}
 		}
 		if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateAuthenticate); gateErr != nil {
 			s.mu.Lock()
@@ -911,12 +949,15 @@ func serveAdminUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
-	if s.AdminToken == "" || !hmac.Equal([]byte(r.Header.Get("X-Admin-Token")), []byte(s.AdminToken)) {
-		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin_auth_required"})
+	actor, ok := s.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	if s.ExamStore == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "database_required"})
+		return
+	}
+	if s.globalUserAPI(w, r, actor) {
 		return
 	}
 	if r.URL.Path == "/admin/api/exams" && r.Method == http.MethodGet {
@@ -1056,30 +1097,9 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 6 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "students" {
-		var err error
-		switch r.Method {
-		case http.MethodPut:
-			var input struct {
-				DisplayName string `json:"display_name"`
-				Enabled     *bool  `json:"enabled"`
-			}
-			_ = json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&input)
-			enabled := true
-			if input.Enabled != nil {
-				enabled = *input.Enabled
-			}
-			err = s.ExamStore.SetStudentDetails(r.Context(), parts[3], parts[5], input.DisplayName, enabled)
-		case http.MethodDelete:
-			err = s.ExamStore.RemoveStudent(r.Context(), parts[3], parts[5])
-		default:
-			s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
-			return
-		}
-		if err != nil {
-			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_student"})
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+		// Legacy subject rosters are imported on authenticated login. All new
+		// edits must use global user IDs to avoid a second identity database.
+		s.writeJSON(w, http.StatusGone, map[string]string{"error": "use_global_user_participants"})
 		return
 	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "sessions" && r.Method == http.MethodGet {
@@ -1344,7 +1364,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.ExamStore != nil {
-				if err := s.ExamStore.ActivateSession(r.Context(), session.ID, session.ExamID, session.Subject); err != nil {
+				if err := s.ExamStore.ActivateSession(r.Context(), session.ID, session.ExamID, session.Subject, s.identityIssuer()); err != nil {
 					s.writeExamError(w, err)
 					return
 				}
