@@ -428,7 +428,8 @@ async function startExam(target, config, sessionID) {
             returnToEntry();
             return;
         }
-        status.textContent = 'Unable to start the exam';
+        const detail = error instanceof Error ? `: ${error.message}` : '';
+        status.textContent = `Unable to start the exam${detail}`;
     }
     finally {
         launch.disabled = false;
@@ -660,55 +661,68 @@ async function selectExam(exam) {
     }
 }
 login.onclick = () => beginConnectLogin();
-const params = new URLSearchParams(window.location.search);
-const targetValue = params.get('target');
-const action = params.get('action');
-const violation = params.get('violation');
-if (action === 'complete') {
-    const actionExamID = params.get('exam_id') || localStorage.getItem(storageExam) || '';
-    currentSessionID = localStorage.getItem(storageSession) || '';
-    if (actionExamID && currentSessionID) {
-        currentConfig = { exam: { id: actionExamID, origin: serviceOrigin, proxy_origin: serviceOrigin, unlock_path: '' }, oidc: { authorization_endpoint: '' }, policy: { alg: '', key_id: '', document: {}, signature: '' } };
-        void completeCurrent('manual');
-    }
-    else {
-        showEnded('There is no active exam session to submit.');
-    }
-}
-else if (violation === 'background') {
-    const sessionID = localStorage.getItem(storageSession) || '';
-    const token = localStorage.getItem(storageToken) || '';
-    if (targetValue) {
-        try {
-            const target = new URL(targetValue);
-            void reportViolation(target.origin, sessionID, token, 'background');
-        }
-        catch { /* keep the browser in the safe error state */ }
-    }
-    showInvalidLink('The exam was suspended because the browser moved to the background. Contact the proctor.');
-}
-else if (params.has('ended')) {
-    showEnded('The exam was submitted. This student cannot enter it again.');
-}
-else if (params.get('auth') === '1' && !targetValue) {
-    void loadAvailableExams();
-}
-else if (!targetValue || params.has('error')) {
-    void loadAvailableExams();
+// The HTTPS shell must be embedded by the browser-owned Grips document. If a
+// stale OIDC return URI or a bookmarked HTTPS URL lands here top-level, native
+// tunnel/fullscreen controls are unavailable; return to the shell before
+// creating or starting a session.
+const directHTTPSExamShell = !embeddedInBrowserShell &&
+    window.location.protocol === 'https:' &&
+    window.location.hostname === 'exam.cs.ac.cn' &&
+    !window.location.port;
+if (directHTTPSExamShell) {
+    showInvalidLink('Open grips://exam.cs.ac.cn in BYOD Browser to start or resume this exam.');
 }
 else {
-    try {
-        void bootstrap(new URL(targetValue)).catch((error) => {
-            if (error instanceof SessionUnauthorizedError) {
-                returnToEntry();
-            }
-            else {
-                showInvalidLink(String(error));
-            }
-        });
+    const params = new URLSearchParams(window.location.search);
+    const targetValue = params.get('target');
+    const action = params.get('action');
+    const violation = params.get('violation');
+    if (action === 'complete') {
+        const actionExamID = params.get('exam_id') || localStorage.getItem(storageExam) || '';
+        currentSessionID = localStorage.getItem(storageSession) || '';
+        if (actionExamID && currentSessionID) {
+            currentConfig = { exam: { id: actionExamID, origin: serviceOrigin, proxy_origin: serviceOrigin, unlock_path: '' }, oidc: { authorization_endpoint: '' }, policy: { alg: '', key_id: '', document: {}, signature: '' } };
+            void completeCurrent('manual');
+        }
+        else {
+            showEnded('There is no active exam session to submit.');
+        }
     }
-    catch {
-        showInvalidLink();
+    else if (violation === 'background') {
+        const sessionID = localStorage.getItem(storageSession) || '';
+        const token = localStorage.getItem(storageToken) || '';
+        if (targetValue) {
+            try {
+                const target = new URL(targetValue);
+                void reportViolation(target.origin, sessionID, token, 'background');
+            }
+            catch { /* keep the browser in the safe error state */ }
+        }
+        showInvalidLink('The exam was suspended because the browser moved to the background. Contact the proctor.');
+    }
+    else if (params.has('ended')) {
+        showEnded('The exam was submitted. This student cannot enter it again.');
+    }
+    else if (params.get('auth') === '1' && !targetValue) {
+        void loadAvailableExams();
+    }
+    else if (!targetValue || params.has('error')) {
+        void loadAvailableExams();
+    }
+    else {
+        try {
+            void bootstrap(new URL(targetValue)).catch((error) => {
+                if (error instanceof SessionUnauthorizedError) {
+                    returnToEntry();
+                }
+                else {
+                    showInvalidLink(String(error));
+                }
+            });
+        }
+        catch {
+            showInvalidLink();
+        }
     }
 }
 export {};

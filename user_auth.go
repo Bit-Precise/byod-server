@@ -133,7 +133,7 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	requestedDestination := r.URL.Query().Get("return_to")
 	// Preserve a bookmarked admin page across OIDC, but never accept an
 	// absolute or protocol-relative URL as a post-login destination.
-	if requestedDestination == "grips://exam/?auth=1" ||
+	if isGripsExamUIReturnURI(requestedDestination) ||
 		s.isExamUIReturnURI(requestedDestination) ||
 		requestedDestination == "/account/" ||
 		(strings.HasPrefix(requestedDestination, "/admin/") &&
@@ -160,6 +160,20 @@ func (s *Service) beginUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// isGripsExamUIReturnURI accepts the two browser-owned aliases used by old
+// and current Grips builds, but does not accept arbitrary custom-scheme URLs.
+func isGripsExamUIReturnURI(raw string) bool {
+	target, err := url.Parse(raw)
+	if err != nil || target.Scheme != "grips" ||
+		(target.Host != "exam" && target.Host != "exam.cs.ac.cn") ||
+		target.User != nil || target.Fragment != "" ||
+		(target.Path != "" && target.Path != "/") {
+		return false
+	}
+	query := target.Query()
+	return query.Get("auth") == "1" && len(query) == 1
 }
 
 func (s *Service) isExamUIReturnURI(raw string) bool {

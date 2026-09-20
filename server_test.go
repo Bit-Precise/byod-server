@@ -81,6 +81,34 @@ func TestConfigurationAndLifecycle(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestTrustedGripsExamReturnURI(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"trusted host", "grips://exam.cs.ac.cn/?target=https%3A%2F%2Fexam.cs.ac.cn%2Fcourse-101", true},
+		{"legacy host", "grips://exam/?target=https%3A%2F%2Fexam.cs.ac.cn%2Fcourse-101", true},
+		{"wrong host", "grips://evil.example/?target=https%3A%2F%2Fexam.cs.ac.cn%2Fcourse-101", false},
+		{"wrong path", "grips://exam.cs.ac.cn/course-101?target=https%3A%2F%2Fexam.cs.ac.cn%2Fcourse-101", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, parseErr := url.Parse(test.raw)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if got := service.validSessionReturnURI(parsed, "course-101"); got != test.want {
+				t.Fatalf("validSessionReturnURI(%q) = %v, want %v", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdminUIIsEmbedded(t *testing.T) {
 	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
 	if err != nil {

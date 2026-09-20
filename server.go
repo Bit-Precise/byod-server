@@ -495,15 +495,18 @@ func tokenFromRequest(r *http.Request) string {
 	return ""
 }
 
-// validSessionReturnURI accepts both the legacy grips:// control document and
-// the server-hosted HTTPS exam shell. The HTTPS form is same-origin and may
-// carry a target exam path, but it can never point to another host.
+// validSessionReturnURI accepts both the legacy and trusted-host Grips control
+// documents and the server-hosted HTTPS exam shell. The HTTPS form is
+// same-origin and may carry a target exam path, but it can never point to
+// another host.
 func (s *Service) validSessionReturnURI(returnURL *url.URL, examID string) bool {
 	if returnURL == nil || examID == "" {
 		return false
 	}
-	if returnURL.Scheme == "grips" && returnURL.Host == "exam" {
-		return returnURL.User == nil && returnURL.Fragment == ""
+	if returnURL.Scheme == "grips" &&
+		(returnURL.Host == "exam" || returnURL.Host == "exam.cs.ac.cn") {
+		return returnURL.User == nil && returnURL.Fragment == "" &&
+			(returnURL.Path == "" || returnURL.Path == "/")
 	}
 	origin, err := url.Parse(s.ExamOrigin)
 	if err != nil || returnURL.Scheme != origin.Scheme || returnURL.Host != origin.Host ||
@@ -1063,7 +1066,10 @@ func serveExamUI(w http.ResponseWriter, r *http.Request, name string) {
 	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "\\") {
 		name = "index.html"
 	}
-	if name == "index.html" {
+	// app.js is intentionally not cached: the dynamic shell and its native
+	// bridge contract are released together with the server image. A stale
+	// cached app.js can otherwise keep a browser on the old HTTPS-only flow.
+	if name == "index.html" || name == "app.js" || name == "bridge.html" {
 		w.Header().Set("Cache-Control", "no-store")
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=300")
