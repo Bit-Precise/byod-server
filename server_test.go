@@ -62,6 +62,16 @@ func TestConfigurationAndLifecycle(t *testing.T) {
 		t.Fatalf("start after auth: %d", response.StatusCode)
 	}
 	response.Body.Close()
+	// Starting the same authenticated attempt is idempotent. The browser may
+	// retry after a lost response or a student may double-click the button; an
+	// already active session must not be mislabeled as unauthenticated.
+	request, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/sessions/"+created["session_id"]+"/start", strings.NewReader(`{}`))
+	request.Header.Set("Authorization", "Bearer "+created["browser_token"])
+	response, _ = http.DefaultClient.Do(request)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("start after already active: %d", response.StatusCode)
+	}
+	response.Body.Close()
 	request, _ = http.NewRequest(http.MethodGet, server.URL+"/course-101/end", nil)
 	request.Header.Set("Authorization", "Bearer "+created["browser_token"])
 	response, _ = http.DefaultClient.Do(request)

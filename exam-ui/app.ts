@@ -452,6 +452,8 @@ function showReady(target: URL, config: ExamConfig, sessionID: string) {
 
 async function startExam(target: URL, config: ExamConfig, sessionID: string) {
   const token = localStorage.getItem(storageToken) || '';
+  launch.disabled = true;
+  status.textContent = 'Starting exam…';
   try {
     const response = await fetch(new URL(`/v1/sessions/${sessionID}/start`, serviceOrigin), {
       method: 'POST', credentials: 'include',
@@ -464,7 +466,21 @@ async function startExam(target: URL, config: ExamConfig, sessionID: string) {
       return;
     }
     if (response.status === 409) {
-      showWaiting(target, config, sessionID);
+      const conflict = await response.json().catch(() => ({})) as {
+        error?: string;
+        state?: string;
+      };
+      if (conflict.state === 'active') {
+        // Older replicas may return a conflict after another start request
+        // already activated the same attempt. Recover without asking the
+        // student to authenticate again.
+        await activateTunnel(config, sessionID, token);
+        showReady(target, config, sessionID);
+      } else if (conflict.error === 'exam_not_started') {
+        showWaiting(target, config, sessionID);
+      } else {
+        returnToEntry('The exam session is no longer authenticated. Sign in again.');
+      }
       return;
     }
     if (response.status === 410) {
@@ -476,6 +492,8 @@ async function startExam(target: URL, config: ExamConfig, sessionID: string) {
       return;
     }
     status.textContent = 'Unable to start the exam';
+  } finally {
+    launch.disabled = false;
   }
 }
 

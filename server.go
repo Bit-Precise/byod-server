@@ -1556,7 +1556,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			s.mu.Lock()
-			if session.State != "authenticated" {
+			if session.State != "authenticated" && session.State != "active" {
 				state := session.State
 				s.mu.Unlock()
 				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "authentication_required", "state": state})
@@ -1567,9 +1567,12 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				s.writeExamError(w, ErrExamAlreadyDone)
 				return
 			}
+			wasActive := session.State == "active"
 			session.State = "active"
 			session.LastSeenAt = time.Now().Unix()
-			s.appendEvent(session, "exam_started", "info", "")
+			if !wasActive {
+				s.appendEvent(session, "exam_started", "info", "")
+			}
 			s.mu.Unlock()
 			s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": session.State, "proxy_base": "/" + session.ExamID + "/"})
 			return
