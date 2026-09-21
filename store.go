@@ -18,7 +18,8 @@ type PostgresStore struct {
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 type StoredExam struct {
-	ID string `json:"id"`
+	ID      string `json:"id"`
+	Hashtag string `json:"hashtag"`
 	// ExamCode is retained in the durable model only for migrations from the
 	// former code-entry flow. It is deliberately not part of any API response;
 	// students choose from the exams assigned to their OIDC identity.
@@ -35,6 +36,7 @@ type StoredExam struct {
 // after OIDC based on their durable participant assignment.
 type AvailableExam struct {
 	ID        string     `json:"id"`
+	Hashtag   string     `json:"hashtag"`
 	BaseURL   string     `json:"base_url"`
 	State     string     `json:"state"`
 	StartsAt  *time.Time `json:"starts_at,omitempty"`
@@ -118,11 +120,60 @@ ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS exam_code CHAR(8);ALTER TABLE by
 UPDATE byod_exams SET exam_code=upper(substr(md5(exam_id),1,8)) WHERE exam_code IS NULL OR btrim(exam_code)='';
 ALTER TABLE byod_exams ALTER COLUMN exam_code SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS byod_exams_exam_code_idx ON byod_exams(exam_code);
-INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;`+userSchema)
+INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;
+`+userSchema+examIdentityMigration)
 	return err
 }
+
+// examIdentityMigration upgrades the original text-keyed exam model without
+// losing existing rosters, sessions, completions, or audit data. The old
+// exam_id column remains as an internal compatibility key for foreign keys;
+// all values are rewritten to the UUID text, while the public hashtag is kept
+// separately and may be changed without touching dependent rows.
+const examIdentityMigration = `
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM byod_schema_migrations WHERE version=3) THEN
+    ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS id UUID;
+    ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS hashtag TEXT;
+    UPDATE byod_exams
+       SET id = (substr(md5(exam_id),1,8)||'-'||substr(md5(exam_id),9,4)||'-4'||substr(md5(exam_id),14,3)||'-a'||substr(md5(exam_id),18,3)||'-'||substr(md5(exam_id),21,12))::uuid
+     WHERE id IS NULL;
+    UPDATE byod_exams SET hashtag=exam_id WHERE hashtag IS NULL OR btrim(hashtag)='';
+    ALTER TABLE byod_exams ALTER COLUMN id SET NOT NULL;
+    ALTER TABLE byod_exams ALTER COLUMN hashtag SET NOT NULL;
+
+    ALTER TABLE byod_exam_students DROP CONSTRAINT IF EXISTS byod_exam_students_exam_id_fkey;
+    ALTER TABLE byod_exam_completions DROP CONSTRAINT IF EXISTS byod_exam_completions_exam_id_fkey;
+    ALTER TABLE byod_exam_participants DROP CONSTRAINT IF EXISTS byod_exam_participants_exam_id_fkey;
+    ALTER TABLE byod_exam_admins DROP CONSTRAINT IF EXISTS byod_exam_admins_exam_id_fkey;
+
+    UPDATE byod_exam_students c SET exam_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_exam_completions c SET exam_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_exam_participants c SET exam_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_exam_admins c SET exam_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_sessions c SET exam_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_tunnel_tickets c SET exam_id=e.id::text, endpoint_id=e.id::text FROM byod_exams e WHERE c.exam_id=e.exam_id;
+    UPDATE byod_exams SET exam_id=id::text;
+
+    ALTER TABLE byod_exams DROP CONSTRAINT IF EXISTS byod_exams_pkey;
+    ALTER TABLE byod_exams ADD CONSTRAINT byod_exams_pkey PRIMARY KEY (id);
+    CREATE UNIQUE INDEX IF NOT EXISTS byod_exams_exam_id_key ON byod_exams(exam_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS byod_exams_hashtag_key ON byod_exams(hashtag);
+    ALTER TABLE byod_exam_students ADD CONSTRAINT byod_exam_students_exam_id_fkey FOREIGN KEY (exam_id) REFERENCES byod_exams(exam_id) ON DELETE CASCADE;
+    ALTER TABLE byod_exam_completions ADD CONSTRAINT byod_exam_completions_exam_id_fkey FOREIGN KEY (exam_id) REFERENCES byod_exams(exam_id) ON DELETE CASCADE;
+    ALTER TABLE byod_exam_participants ADD CONSTRAINT byod_exam_participants_exam_id_fkey FOREIGN KEY (exam_id) REFERENCES byod_exams(exam_id) ON DELETE CASCADE;
+    ALTER TABLE byod_exam_admins ADD CONSTRAINT byod_exam_admins_exam_id_fkey FOREIGN KEY (exam_id) REFERENCES byod_exams(exam_id) ON DELETE CASCADE;
+    INSERT INTO byod_schema_migrations(version) VALUES(3);
+  END IF;
+END $$;
+`
+
 func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT exam_id,exam_code,base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams ORDER BY exam_id`)
+	if err := s.advanceExamStates(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams ORDER BY hashtag`)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +182,7 @@ func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
 	for rows.Next() {
 		var x StoredExam
 		var p []byte
-		if err := rows.Scan(&x.ID, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(p, &x.Policy)
@@ -139,8 +190,121 @@ func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *PostgresStore) advanceExamStates(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE byod_exams SET state=CASE
+		WHEN state IN ('scheduled','active') AND ends_at IS NOT NULL AND ends_at <= now() THEN 'ended'
+		WHEN state='scheduled' AND (starts_at IS NULL OR starts_at <= now()) THEN 'active'
+		ELSE state END, updated_at=now()
+		WHERE (state IN ('scheduled','active') AND ends_at IS NOT NULL AND ends_at <= now())
+		   OR (state='scheduled' AND (starts_at IS NULL OR starts_at <= now()))`)
+	return err
+}
+
+// resolveExamID accepts the public UUID and the legacy/user-facing hashtag so
+// older browser links keep working while all durable child rows use the UUID
+// string as their internal exam key.
+func (s *PostgresStore) resolveExamID(ctx context.Context, ref string) (string, error) {
+	if !validExamID(ref) {
+		return "", errors.New("invalid exam id")
+	}
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id::text FROM byod_exams WHERE id::text=$1 OR hashtag=$1 OR exam_id=$1`, ref).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
+	return id, err
+}
+
+func (s *PostgresStore) scanExam(row scanner) (*StoredExam, error) {
+	var x StoredExam
+	var p []byte
+	if err := row.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(p, &x.Policy)
+	return &x, nil
+}
+
+func (s *PostgresStore) validateExamDefinition(hashtag, base string, start, end *time.Time, policy map[string]any) (*url.URL, []byte, error) {
+	if !validExamHashtag(hashtag) {
+		return nil, nil, errors.New("invalid hashtag")
+	}
+	u, err := parseUpstreamURL(base, true)
+	if err != nil {
+		return nil, nil, errors.New("invalid base_url: transparent exam upstream must be an HTTPS URL without credentials or fragment")
+	}
+	if start != nil && end != nil && !start.Before(*end) {
+		return nil, nil, ErrExamInvalidWindow
+	}
+	p := []byte(`{}`)
+	if policy != nil {
+		p, err = json.Marshal(policy)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return u, p, nil
+}
+
+func (s *PostgresStore) CreateExam(ctx context.Context, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
+	u, p, err := s.validateExamDefinition(hashtag, base, start, end, policy)
+	if err != nil {
+		return nil, err
+	}
+	id, err := newExamUUID()
+	if err != nil {
+		return nil, err
+	}
+	code, err := newExamCode()
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(id,exam_id,hashtag,exam_code,base_url,state,starts_at,ends_at,policy_json) VALUES($1::uuid,$1::text,$2,$3,$4,'draft',$5,$6,$7)`, id, hashtag, code, u.String(), start, end, p)
+	if err != nil {
+		return nil, err
+	}
+	exam, ok, err := s.GetExam(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return exam, nil
+}
+
+func (s *PostgresStore) UpdateExam(ctx context.Context, ref, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
+	existing, ok, err := s.GetExam(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	u, p, err := s.validateExamDefinition(hashtag, base, start, end, policy)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET hashtag=$2,base_url=$3,starts_at=$4,ends_at=$5,policy_json=$6,updated_at=now() WHERE id=$1`, existing.ID, hashtag, u.String(), start, end, p)
+	if err != nil {
+		return nil, err
+	}
+	exam, ok, err := s.GetExam(ctx, existing.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return exam, nil
+}
 func (s *PostgresStore) ListStudents(ctx context.Context, id string) ([]StoredStudent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT subject,display_name,enabled FROM byod_exam_students WHERE exam_id=$1 ORDER BY subject`, id)
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT subject,display_name,enabled FROM byod_exam_students WHERE exam_id=$1 ORDER BY subject`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +321,10 @@ func (s *PostgresStore) ListStudents(ctx context.Context, id string) ([]StoredSt
 }
 
 func (s *PostgresStore) StudentAccess(ctx context.Context, examID, subject string) (configured, enabled bool, err error) {
+	examID, err = s.resolveExamID(ctx, examID)
+	if err != nil {
+		return false, false, err
+	}
 	var count int
 	if err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM byod_exam_students WHERE exam_id=$1`, examID).Scan(&count); err != nil {
 		return
@@ -175,14 +343,19 @@ func (s *PostgresStore) SetStudent(ctx context.Context, id, subject string, enab
 	return s.SetStudentDetails(ctx, id, subject, "", enabled)
 }
 func (s *PostgresStore) SetStudentDetails(ctx context.Context, id, subject, name string, enabled bool) error {
-	if !validExamID(id) || subject == "" || len(subject) > 256 || len(name) > 256 {
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil || subject == "" || len(subject) > 256 || len(name) > 256 {
 		return errors.New("invalid student")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_exam_students(exam_id,subject,display_name,enabled)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO UPDATE SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled`, id, subject, name, enabled)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exam_students(exam_id,subject,display_name,enabled)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO UPDATE SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled`, key, subject, name, enabled)
 	return err
 }
 func (s *PostgresStore) RemoveStudent(ctx context.Context, id, subject string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM byod_exam_students WHERE exam_id=$1 AND subject=$2`, id, subject)
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM byod_exam_students WHERE exam_id=$1 AND subject=$2`, key, subject)
 	return err
 }
 func (s *PostgresStore) Close() error { return s.db.Close() }
@@ -193,17 +366,13 @@ func (s *PostgresStore) UpsertExamDetails(ctx context.Context, id, base, state s
 	return s.UpsertExamDetailsWithCode(ctx, id, "", base, state, start, end, policy)
 }
 
+// UpsertExamDetails is retained for local/integration callers from the legacy
+// API. New administrative writes use CreateExam/UpdateExam and never accept a
+// state from the caller.
 func (s *PostgresStore) UpsertExamDetailsWithCode(ctx context.Context, id, code, base, state string, start, end *time.Time, policy map[string]any) error {
-	if !validExamID(id) {
-		return errors.New("invalid exam id")
-	}
 	code = normalizeExamCode(code)
 	if code != "" && !validExamCode(code) {
 		return errors.New("invalid exam code")
-	}
-	u, err := parseUpstreamURL(base, true)
-	if err != nil {
-		return errors.New("invalid base_url: transparent exam upstream must be an HTTPS URL without credentials or fragment")
 	}
 	if state == "" {
 		state = "draft"
@@ -211,69 +380,76 @@ func (s *PostgresStore) UpsertExamDetailsWithCode(ctx context.Context, id, code,
 	if state != "draft" && state != "scheduled" && state != "active" && state != "ended" {
 		return errors.New("invalid state")
 	}
-	if start != nil && end != nil && !start.Before(*end) {
-		return ErrExamInvalidWindow
+	if !validExamHashtag(id) {
+		return errors.New("invalid exam hashtag")
 	}
-	if code == "" {
-		var existing string
-		lookupErr := s.db.QueryRowContext(ctx, `SELECT btrim(exam_code) FROM byod_exams WHERE exam_id=$1`, id).Scan(&existing)
-		if lookupErr == nil && validExamCode(existing) {
-			code = existing
-		} else if errors.Is(lookupErr, sql.ErrNoRows) {
-			code, err = newExamCode()
-			if err != nil {
-				return err
-			}
-		} else if lookupErr != nil {
-			return lookupErr
-		} else {
-			code, err = newExamCode()
-			if err != nil {
-				return err
-			}
-		}
-	}
-	p := []byte(`{}`)
-	if policy != nil {
-		p, err = json.Marshal(policy)
+	if existing, ok, err := s.GetExam(ctx, id); err != nil {
+		return err
+	} else if ok {
+		u, p, err := s.validateExamDefinition(existing.Hashtag, base, start, end, policy)
 		if err != nil {
 			return err
 		}
+		if code == "" {
+			code = existing.ExamCode
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET exam_code=$2,base_url=$3,state=$4,starts_at=$5,ends_at=$6,policy_json=$7,updated_at=now() WHERE id=$1`, existing.ID, code, u.String(), state, start, end, p)
+		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(exam_id,exam_code,base_url,state,starts_at,ends_at,policy_json)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(exam_id)DO UPDATE SET exam_code=CASE WHEN $2 <> '' THEN EXCLUDED.exam_code ELSE byod_exams.exam_code END,base_url=EXCLUDED.base_url,state=EXCLUDED.state,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,policy_json=EXCLUDED.policy_json,updated_at=now()`, id, code, u.String(), state, start, end, p)
+	if !validExamHashtag(id) {
+		return errors.New("invalid exam hashtag")
+	}
+	if _, err := s.CreateExam(ctx, id, base, start, end, policy); err != nil {
+		return err
+	}
+	exam, ok, err := s.GetExam(ctx, id)
+	if err != nil || !ok {
+		if err == nil {
+			err = sql.ErrNoRows
+		}
+		return err
+	}
+	if code == "" {
+		code = exam.ExamCode
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET exam_code=$2,state=$3 WHERE id::text=$1`, exam.ID, code, state)
 	return err
 }
 
 func (s *PostgresStore) GetExam(ctx context.Context, id string) (*StoredExam, bool, error) {
-	var x StoredExam
-	var p []byte
-	err := s.db.QueryRowContext(ctx, `SELECT exam_id,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE exam_id=$1`, id).Scan(&x.ID, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt)
+	if err := s.advanceExamStates(ctx); err != nil {
+		return nil, false, err
+	}
+	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE id::text=$1 OR hashtag=$1 OR exam_id=$1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	_ = json.Unmarshal(p, &x.Policy)
-	return &x, true, nil
+	return x, true, nil
 }
 
 func (s *PostgresStore) ExamByCode(ctx context.Context, code string) (*StoredExam, bool, error) {
-	var x StoredExam
-	var p []byte
-	err := s.db.QueryRowContext(ctx, `SELECT exam_id,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE upper(btrim(exam_code))=$1`, normalizeExamCode(code)).Scan(&x.ID, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt)
+	if err := s.advanceExamStates(ctx); err != nil {
+		return nil, false, err
+	}
+	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE upper(btrim(exam_code))=$1`, normalizeExamCode(code)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	_ = json.Unmarshal(p, &x.Policy)
-	return &x, true, nil
+	return x, true, nil
 }
 
 func (s *PostgresStore) MarkExamEnded(ctx context.Context, id string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE byod_exams SET state='ended',updated_at=now() WHERE exam_id=$1 AND state <> 'ended' AND ends_at IS NOT NULL AND ends_at <= $2`, id, now)
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET state='ended',updated_at=now() WHERE id=$1::uuid AND state <> 'ended' AND ends_at IS NOT NULL AND ends_at <= $2`, key, now)
 	return err
 }
 
@@ -281,17 +457,37 @@ func (s *PostgresStore) SetExamState(ctx context.Context, id, state string) erro
 	if state != "draft" && state != "scheduled" && state != "active" && state != "ended" {
 		return errors.New("invalid state")
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE byod_exams SET state=$2,updated_at=now() WHERE exam_id=$1`, id, state)
-	return err
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE byod_exams SET state=$2,updated_at=now() WHERE id=$1::uuid AND (state=$2 OR (state='draft' AND $2 IN ('scheduled','active')) OR (state='scheduled' AND $2='active') OR (state='active' AND $2='ended'))`, key, state)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return err
+	} else if count != 1 {
+		return errors.New("invalid exam state transition")
+	}
+	return nil
 }
 
 func (s *PostgresStore) StudentCompleted(ctx context.Context, examID, subject string) (bool, error) {
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return false, err
+	}
 	var exists bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, examID, subject).Scan(&exists)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, key, subject).Scan(&exists)
 	return exists, err
 }
 
 func (s *PostgresStore) RecordCompletion(ctx context.Context, examID, subject, sessionID string, completedAt time.Time) (bool, error) {
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -299,10 +495,10 @@ func (s *PostgresStore) RecordCompletion(ctx context.Context, examID, subject, s
 	defer tx.Rollback()
 	// Serialize activation and completion across replicas using the exam row.
 	var locked string
-	if err = tx.QueryRowContext(ctx, `SELECT exam_id FROM byod_exams WHERE exam_id=$1 FOR UPDATE`, examID).Scan(&locked); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT id::text FROM byod_exams WHERE id=$1::uuid FOR UPDATE`, key).Scan(&locked); err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO byod_exam_completions(exam_id,subject,session_id,completed_at)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO NOTHING`, examID, subject, sessionID, completedAt)
+	result, err := tx.ExecContext(ctx, `INSERT INTO byod_exam_completions(exam_id,subject,session_id,completed_at)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO NOTHING`, key, subject, sessionID, completedAt)
 	if err != nil {
 		return false, err
 	}
@@ -310,10 +506,10 @@ func (s *PostgresStore) RecordCompletion(ctx context.Context, examID, subject, s
 	if err != nil {
 		return false, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE byod_sessions SET state='ended' WHERE exam_id=$1 AND subject=$2 AND state <> 'ended'`, examID, subject); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE byod_sessions SET state='ended' WHERE exam_id=$1 AND subject=$2 AND state <> 'ended'`, key, subject); err != nil {
 		return false, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE byod_tunnel_tickets SET used_at=$3 WHERE session_id IN (SELECT id FROM byod_sessions WHERE exam_id=$1 AND subject=$2) AND used_at IS NULL`, examID, subject, completedAt); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE byod_tunnel_tickets SET used_at=$3 WHERE session_id IN (SELECT id FROM byod_sessions WHERE exam_id=$1 AND subject=$2) AND used_at IS NULL`, key, subject, completedAt); err != nil {
 		return false, err
 	}
 	return count == 1, tx.Commit()
@@ -322,6 +518,10 @@ func (s *PostgresStore) RecordCompletion(ctx context.Context, examID, subject, s
 // ActivateSession rechecks the exam window, roster and completion in one DB
 // transaction. A waiting session cannot race another session's submission.
 func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, subject, issuer string) error {
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -332,7 +532,7 @@ func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, 
 	}
 	var state string
 	var start, end *time.Time
-	if err = tx.QueryRowContext(ctx, `SELECT state,starts_at,ends_at FROM byod_exams WHERE exam_id=$1 FOR UPDATE`, examID).Scan(&state, &start, &end); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT state,starts_at,ends_at FROM byod_exams WHERE id=$1::uuid FOR UPDATE`, key).Scan(&state, &start, &end); err != nil {
 		return err
 	}
 	now := time.Now()
@@ -346,7 +546,7 @@ func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, 
 		return ErrExamNotStarted
 	}
 	var allowed, completed bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_participants p JOIN byod_users u ON p.user_id=u.id WHERE p.exam_id=$1 AND u.subject=$2 AND u.issuer=$3 AND p.enabled AND u.enabled), EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, examID, subject, issuer).Scan(&allowed, &completed); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_users u JOIN byod_exam_participants p ON p.user_id=u.id WHERE p.exam_id=$1 AND u.subject=$2 AND u.issuer=$3 AND p.enabled AND u.enabled), EXISTS(SELECT 1 FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2)`, key, subject, issuer).Scan(&allowed, &completed); err != nil {
 		return err
 	}
 	if completed {
@@ -355,7 +555,7 @@ func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, 
 	if !allowed {
 		return ErrExamStudentDenied
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE byod_sessions SET state='active',last_seen_at=$4 WHERE id=$1 AND exam_id=$2 AND subject=$3 AND state IN ('authenticated','active')`, sessionID, examID, subject, now)
+	result, err := tx.ExecContext(ctx, `UPDATE byod_sessions SET state='active',last_seen_at=$4 WHERE id=$1 AND exam_id=$2 AND subject=$3 AND state IN ('authenticated','active')`, sessionID, key, subject, now)
 	if err != nil {
 		return err
 	}
@@ -370,7 +570,11 @@ func (s *PostgresStore) ActivateSession(ctx context.Context, sessionID, examID, 
 }
 
 func (s *PostgresStore) ExpireSessions(ctx context.Context, examID string, now time.Time) ([]StoredSession, error) {
-	rows, err := s.db.QueryContext(ctx, `UPDATE byod_sessions SET state='ended' WHERE exam_id=$1 AND state IN ('pending','authenticating','authenticated','active') RETURNING id,exam_id,subject,state,created_at,last_seen_at,violation_count`, examID)
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `UPDATE byod_sessions SET state='ended' WHERE exam_id=$1 AND state IN ('pending','authenticating','authenticated','active') RETURNING id,exam_id,subject,state,created_at,last_seen_at,violation_count`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -389,21 +593,32 @@ func (s *PostgresStore) ExpireSessions(ctx context.Context, examID string, now t
 	_ = rows.Close()
 	for _, session := range out {
 		if session.Subject != "" {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO byod_exam_completions(exam_id,subject,session_id,completed_at)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO NOTHING`, examID, session.Subject, session.ID, now); err != nil {
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO byod_exam_completions(exam_id,subject,session_id,completed_at)VALUES($1,$2,$3,$4)ON CONFLICT(exam_id,subject)DO NOTHING`, key, session.Subject, session.ID, now); err != nil {
 				return nil, err
 			}
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE byod_tunnel_tickets SET used_at=$2 WHERE session_id IN (SELECT id FROM byod_sessions WHERE exam_id=$1) AND used_at IS NULL`, examID, now)
+	_, err = s.db.ExecContext(ctx, `UPDATE byod_tunnel_tickets SET used_at=$2 WHERE session_id IN (SELECT id FROM byod_sessions WHERE exam_id=$1) AND used_at IS NULL`, key, now)
 	return out, err
 }
 func (s *PostgresStore) DeleteExam(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM byod_exams WHERE exam_id=$1`, id)
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM byod_exams WHERE id=$1::uuid`, key)
 	return err
 }
 func (s *PostgresStore) Upstream(ctx context.Context, id string) (*url.URL, bool, error) {
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
 	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT base_url FROM byod_exams WHERE exam_id=$1`, id).Scan(&raw)
+	err = s.db.QueryRowContext(ctx, `SELECT base_url FROM byod_exams WHERE id=$1::uuid`, key).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -415,8 +630,18 @@ func (s *PostgresStore) Upstream(ctx context.Context, id string) (*url.URL, bool
 }
 
 func (s *PostgresStore) ExamState(ctx context.Context, id string) (string, bool, error) {
+	if err := s.advanceExamStates(ctx); err != nil {
+		return "", false, err
+	}
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
 	var state string
-	err := s.db.QueryRowContext(ctx, `SELECT state FROM byod_exams WHERE exam_id=$1`, id).Scan(&state)
+	err = s.db.QueryRowContext(ctx, `SELECT state FROM byod_exams WHERE id=$1::uuid`, key).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -427,8 +652,15 @@ func (s *PostgresStore) ExamState(ctx context.Context, id string) (string, bool,
 }
 
 func (s *PostgresStore) Policy(ctx context.Context, id string) (map[string]any, error) {
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	var raw []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT policy_json FROM byod_exams WHERE exam_id=$1`, id).Scan(&raw); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT policy_json FROM byod_exams WHERE id=$1::uuid`, key).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -451,7 +683,11 @@ func (s *PostgresStore) SaveSession(ctx context.Context, x *Session) error {
 	if x.BrowserToken != "" {
 		tokenHash = digestToken(x.BrowserToken)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count,browser_token_hash)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9,$10)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count,browser_token_hash=CASE WHEN length(EXCLUDED.browser_token_hash)>0 THEN EXCLUDED.browser_token_hash ELSE byod_sessions.browser_token_hash END`, x.ID, x.ExamID, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount, tokenHash)
+	key, err := s.resolveExamID(ctx, x.ExamID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count,browser_token_hash)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9,$10)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count,browser_token_hash=CASE WHEN length(EXCLUDED.browser_token_hash)>0 THEN EXCLUDED.browser_token_hash ELSE byod_sessions.browser_token_hash END`, x.ID, key, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount, tokenHash)
 	return err
 }
 
@@ -489,7 +725,11 @@ func (s *PostgresStore) SaveEvent(ctx context.Context, x ExamEvent) error {
 }
 
 func (s *PostgresStore) CreateTunnelTicket(ctx context.Context, hash []byte, sessionID, examID, endpointID string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO byod_tunnel_tickets(ticket_hash,session_id,exam_id,endpoint_id,expires_at)VALUES($1,$2,$3,$4,$5)`, hash, sessionID, examID, endpointID, expiresAt)
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_tunnel_tickets(ticket_hash,session_id,exam_id,endpoint_id,expires_at)VALUES($1,$2,$3,$4,$5)`, hash, sessionID, key, endpointID, expiresAt)
 	return err
 }
 
@@ -526,7 +766,11 @@ func (s *PostgresStore) RevokeTunnelTickets(ctx context.Context, sessionID strin
 	return err
 }
 func (s *PostgresStore) ListSessions(ctx context.Context, id string) ([]StoredSession, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,exam_id,subject,state,created_at,last_seen_at,violation_count FROM byod_sessions WHERE exam_id=$1 ORDER BY created_at DESC`, id)
+	key, err := s.resolveExamID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,exam_id,subject,state,created_at,last_seen_at,violation_count FROM byod_sessions WHERE exam_id=$1 ORDER BY created_at DESC`, key)
 	if err != nil {
 		return nil, err
 	}

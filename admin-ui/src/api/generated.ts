@@ -564,11 +564,17 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Exam: {
-            id: string;
+            /**
+             * Format: uuid
+             * @description Internal immutable primary key
+             */
+            readonly id: string;
+            /** @description User-defined exam label */
+            hashtag: string;
             /** Format: uri */
             base_url: string;
             /** @enum {string} */
-            state: "draft" | "scheduled" | "active" | "ended";
+            readonly state: "draft" | "scheduled" | "active" | "ended";
             /** Format: date-time */
             starts_at?: string | null;
             /** Format: date-time */
@@ -578,11 +584,10 @@ export interface components {
             };
         };
         ExamInput: {
-            id: string;
+            /** @description User-defined exam label */
+            hashtag: string;
             /** Format: uri */
             base_url: string;
-            /** @enum {string} */
-            state?: "draft" | "scheduled" | "active" | "ended";
             /** Format: date-time */
             starts_at?: string | null;
             /** Format: date-time */
@@ -592,11 +597,13 @@ export interface components {
             };
         };
         AvailableExam: {
+            /** Format: uuid */
             id: string;
+            hashtag: string;
             /** Format: uri */
             base_url: string;
             /** @enum {string} */
-            state: "draft" | "scheduled" | "active" | "ended";
+            readonly state: "draft" | "scheduled" | "active" | "ended";
             /** Format: date-time */
             starts_at?: string | null;
             /** Format: date-time */
@@ -604,6 +611,7 @@ export interface components {
             completed: boolean;
         };
         SessionInput: {
+            /** Format: uuid */
             exam_id: string;
             /** Format: uri */
             return_uri?: string;
@@ -619,6 +627,7 @@ export interface components {
         };
         BrowserSession: {
             session_id: string;
+            /** Format: uuid */
             exam_id: string;
             state: string;
             subject?: boolean;
@@ -713,6 +722,7 @@ export interface components {
         };
         Session: {
             id: string;
+            /** Format: uuid */
             exam_id: string;
             subject: string;
             state: string;

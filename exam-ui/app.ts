@@ -7,6 +7,7 @@ export {};
 type ExamConfig = {
   exam: {
     id: string;
+    hashtag?: string;
     origin: string;
     source_url?: string;
     source_origin?: string;
@@ -39,6 +40,7 @@ type ExamConfig = {
 
 type AvailableExam = {
   id: string;
+  hashtag: string;
   base_url: string;
   state: string;
   starts_at?: string | null;
@@ -629,7 +631,7 @@ function showExamChoices(exams: AvailableExam[]) {
     button.className = 'exam-choice';
     button.disabled = exam.completed || exam.state === 'ended';
     const titleNode = document.createElement('strong');
-    titleNode.textContent = exam.id;
+    titleNode.textContent = `#${exam.hashtag}`;
     const detail = document.createElement('small');
     detail.textContent = `${examLabel(exam)} · starts ${formatTime(exam.starts_at)} · ends ${formatTime(exam.ends_at)}`;
     button.append(titleNode, detail);

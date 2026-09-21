@@ -22,18 +22,18 @@ paths:
     get: {operationId: listExams, responses: {'200': {description: Exams, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Exam'}}}}}}}
     post: {operationId: createExam, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamInput'}}}}, responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
   /admin/api/exams/{examId}:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: getExam, responses: {'200': {description: Exam, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
     patch: {operationId: updateExam, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExamInput'}}}}, responses: {'200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}}}
     delete: {operationId: deleteExam, responses: {'204': {description: Deleted}}}
   /admin/api/exams/{examId}/publish:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     post: {operationId: publishExam, responses: {'200': {description: Published, content: {application/json: {schema: {$ref: '#/components/schemas/Exam'}}}}, '409': {description: Invalid publication state}}}
   /admin/api/exams/{examId}/students:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: listExamStudents, responses: {'200': {description: Students, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Student'}}}}}}}
   /admin/api/exams/{examId}/students/{subject}:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: subject, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}, {name: subject, in: path, required: true, schema: {type: string}}]
     put: {operationId: addExamStudent, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/StudentInput'}}}}, responses: {'204': {description: Added}}}
     delete: {operationId: removeExamStudent, responses: {'204': {description: Removed}}}
   /admin/api/users:
@@ -44,23 +44,23 @@ paths:
     get: {operationId: getUser, responses: {'200': {description: User, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}}}
     patch: {operationId: updateUser, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/UserUpdate'}}}}, responses: {'200': {description: Updated user, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}}}
   /admin/api/exams/{examId}/participants:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: listExamParticipants, responses: {'200': {description: Participants, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Participant'}}}}}}}
   /admin/api/exams/{examId}/participants/{userId}:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: userId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}, {name: userId, in: path, required: true, schema: {type: string}}]
     put: {operationId: setExamParticipant, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/ParticipantInput'}}}}, responses: {'204': {description: Updated}}}
     delete: {operationId: removeExamParticipant, responses: {'204': {description: Removed}}}
   /admin/api/exams/{examId}/admins:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: listExamAdmins, responses: {'200': {description: Exam administrators, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ExamAdmin'}}}}}}}
   /admin/api/exams/{examId}/admins/{userId}:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}, {name: userId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}, {name: userId, in: path, required: true, schema: {type: string}}]
     put: {operationId: setExamAdmin, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/ParticipantInput'}}}}, responses: {'204': {description: Updated}}}
     delete: {operationId: removeExamAdmin, responses: {'204': {description: Removed}}}
   /admin/api/user-audit:
     get: {operationId: listUserAudit, responses: {'200': {description: User audit events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/UserAudit'}}}}}}}
   /admin/api/exams/{examId}/sessions:
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: listExamSessions, responses: {'200': {description: Sessions, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Session'}}}}}}}
   /admin/api/sessions/{sessionId}:
     parameters: [{name: sessionId, in: path, required: true, schema: {type: string}}]
@@ -97,7 +97,7 @@ paths:
     post: {operationId: reportViolation, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ViolationInput'}}}}, responses: {'200': {description: Violation recorded}, '401': {description: Unauthorized}}}
   /v1/exams/{examId}/complete:
     security: [{browserToken: []}]
-    parameters: [{name: examId, in: path, required: true, schema: {type: string}}]
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     post: {operationId: completeExam, responses: {'200': {description: Completed}, '410': {description: Already completed or ended}}}
   /v1/sessions/{sessionId}/start:
     security: [{browserToken: []}]
@@ -116,12 +116,12 @@ paths:
 components:
   securitySchemes: {adminToken: {type: apiKey, in: header, name: X-Admin-Token}, userSession: {type: apiKey, in: cookie, name: __Host-byod_user}, browserToken: {type: http, scheme: bearer}}
   schemas:
-    Exam: {type: object, required: [id, base_url, state], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
-    ExamInput: {type: object, required: [id, base_url], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
-    AvailableExam: {type: object, required: [id, base_url, state, completed], properties: {id: {type: string}, base_url: {type: string, format: uri}, state: {type: string, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, completed: {type: boolean}}}
-    SessionInput: {type: object, required: [exam_id], properties: {exam_id: {type: string}, return_uri: {type: string, format: uri}}}
+    Exam: {type: object, required: [id, hashtag, base_url, state], properties: {id: {type: string, format: uuid, readOnly: true, description: Internal immutable primary key}, hashtag: {type: string, description: User-defined exam label}, base_url: {type: string, format: uri}, state: {type: string, readOnly: true, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
+    ExamInput: {type: object, required: [hashtag, base_url], properties: {hashtag: {type: string, description: User-defined exam label}, base_url: {type: string, format: uri}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, policy: {type: object, additionalProperties: true}}}
+    AvailableExam: {type: object, required: [id, hashtag, base_url, state, completed], properties: {id: {type: string, format: uuid}, hashtag: {type: string}, base_url: {type: string, format: uri}, state: {type: string, readOnly: true, enum: [draft, scheduled, active, ended]}, starts_at: {type: string, format: date-time, nullable: true}, ends_at: {type: string, format: date-time, nullable: true}, completed: {type: boolean}}}
+    SessionInput: {type: object, required: [exam_id], properties: {exam_id: {type: string, format: uuid}, return_uri: {type: string, format: uri}}}
     SessionBootstrap: {type: object, required: [session_id, attempt_id, browser_session_id, browser_token, authorization_url, state], properties: {session_id: {type: string}, attempt_id: {type: string}, browser_session_id: {type: string}, browser_token: {type: string}, authorization_url: {type: string, format: uri}, state: {type: string}}}
-    BrowserSession: {type: object, required: [session_id, exam_id, state], properties: {session_id: {type: string}, exam_id: {type: string}, state: {type: string}, subject: {type: boolean}, violation_count: {type: integer}, last_violation: {type: string}, last_seen_at: {type: integer, format: int64}}}
+    BrowserSession: {type: object, required: [session_id, exam_id, state], properties: {session_id: {type: string}, exam_id: {type: string, format: uuid}, state: {type: string}, subject: {type: boolean}, violation_count: {type: integer}, last_violation: {type: string}, last_seen_at: {type: integer, format: int64}}}
     ViolationInput: {type: object, required: [type], properties: {type: {type: string}, details: {type: string}}}
     Student: {type: object, required: [subject, enabled], properties: {subject: {type: string}, display_name: {type: string}, enabled: {type: boolean}}}
     StudentInput: {type: object, properties: {display_name: {type: string}, enabled: {type: boolean}}}
@@ -133,7 +133,7 @@ components:
     ParticipantInput: {type: object, properties: {enabled: {type: boolean}}}
     UserAudit: {type: object, required: [id, actor_id, user_id, action, occurred_at], properties: {id: {type: integer}, actor_id: {type: string}, user_id: {type: string}, action: {type: string}, details: {type: string}, occurred_at: {type: string, format: date-time}}}
     AuthMe: {type: object, required: [user, csrf_token, capabilities], properties: {user: {$ref: '#/components/schemas/User'}, csrf_token: {type: string}, capabilities: {type: object, required: [platform_admin, exam_admin], properties: {platform_admin: {type: boolean}, exam_admin: {type: boolean}}}}}
-    Session: {type: object, required: [id, exam_id, subject, state, created_at], properties: {id: {type: string}, exam_id: {type: string}, subject: {type: string}, state: {type: string}, created_at: {type: string, format: date-time}, last_seen_at: {type: string, format: date-time}, violation_count: {type: integer}}}
+    Session: {type: object, required: [id, exam_id, subject, state, created_at], properties: {id: {type: string}, exam_id: {type: string, format: uuid}, subject: {type: string}, state: {type: string}, created_at: {type: string, format: date-time}, last_seen_at: {type: string, format: date-time}, violation_count: {type: integer}}}
     SessionAction: {type: object, required: [action], properties: {action: {type: string, enum: [suspend, resume]}}}
     Event: {type: object, required: [id, session_id, type, severity, occurred_at], properties: {id: {type: string}, session_id: {type: string}, attempt_id: {type: string}, browser_session_id: {type: string}, type: {type: string}, severity: {type: string}, details: {type: string}, occurred_at: {type: integer, format: int64}}}
     TunnelTicket: {type: object, required: [ticket, endpoint_id, expires_at, protocol], properties: {ticket: {type: string}, endpoint_id: {type: string}, expires_at: {type: string, format: date-time}, protocol: {type: string, enum: [byod-tunnel-v1]}}}

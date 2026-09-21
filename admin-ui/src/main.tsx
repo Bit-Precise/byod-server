@@ -406,7 +406,7 @@ function App() {
       toast.add({ title: "删除失败", description: "考试未删除。", type: "error" });
       return;
     }
-    toast.add({ title: "考试已删除", description: exam.id, type: "success" });
+    toast.add({ title: "考试已删除", description: `#${exam.hashtag}`, type: "success" });
     if (route.examId === exam.id) navigate({ section: "exams" }, true);
     await loadExams();
   };
@@ -419,7 +419,7 @@ function App() {
       toast.add({ title: "发布失败", type: "error" });
       return;
     }
-    toast.add({ title: "考试已发布", description: exam.id, type: "success" });
+    toast.add({ title: "考试已发布", description: `#${exam.hashtag}`, type: "success" });
     await loadExams();
   };
   const updateSession = async (action: "suspend" | "resume") => {
@@ -929,7 +929,7 @@ function Overview({
                         className="text-left font-medium text-slate-900 hover:text-indigo-600"
                         onClick={() => onOpenExam(exam)}
                       >
-                        {exam.id}
+                        #{exam.hashtag}
                       </button>
                       <p className="mt-0.5 max-w-xs truncate text-xs text-slate-500">
                         {exam.base_url}
@@ -1093,7 +1093,7 @@ function ExamsPage({
   const filtered = exams.filter(
     (exam) =>
       (!query ||
-        `${exam.id} ${exam.base_url}`
+        `${exam.hashtag} ${exam.id} ${exam.base_url}`
           .toLowerCase()
           .includes(query.toLowerCase())) &&
       (filter === "all" || exam.state === filter),
@@ -1168,7 +1168,8 @@ function ExamsPage({
                   className={selected?.id === exam.id ? "bg-indigo-50/40" : ""}
                 >
                   <TableCell>
-                    <p className="font-medium text-slate-900">{exam.id}</p>
+                    <p className="font-medium text-slate-900">#{exam.hashtag}</p>
+                    <p className="font-mono text-[11px] text-slate-400">{exam.id}</p>
                     <p className="text-xs text-slate-500">
                       学生登录后从已分配考试中选择
                     </p>
@@ -1279,7 +1280,7 @@ function StudentsPage({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle>
-                {selected ? `${selected.id} · 参加名单` : "选择一场考试"}
+                {selected ? `#${selected.hashtag} · 参加名单` : "选择一场考试"}
               </CardTitle>
               <CardDescription>
                 {selected
@@ -1298,7 +1299,7 @@ function StudentsPage({
                 }}
                 options={exams.map((exam) => ({
                   value: exam.id,
-                  label: exam.id,
+                  label: `#${exam.hashtag}`,
                 }))}
               />
             )}
@@ -1741,9 +1742,8 @@ function ExamDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [id, setId] = useState("");
+  const [hashtag, setHashtag] = useState("");
   const [baseURL, setBaseURL] = useState("");
-  const [state, setState] = useState<Exam["state"]>("draft");
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
   const [policy, setPolicy] = useState("{}");
@@ -1753,9 +1753,8 @@ function ExamDialog({
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (!open) return;
-    setId(exam?.id || "");
+    setHashtag(exam?.hashtag || "");
     setBaseURL(exam?.base_url || "");
-    setState(exam?.state || "draft");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
     setEnds(exam?.ends_at ? exam.ends_at.slice(0, 16) : "");
     const examPolicy = exam?.policy as
@@ -1792,12 +1791,12 @@ function ExamDialog({
       require_fullscreen: requireFullscreen,
       lock_fullscreen: requireFullscreen && lockFullscreen,
     };
-    if (!id.trim() || !baseURL.trim()) {
-      setFormError("考试 ID 和源站 URL 不能为空。");
+    if (!hashtag.trim() || !baseURL.trim()) {
+      setFormError("考试 hashtag 和源站 URL 不能为空。");
       return;
     }
-    if (!/^[A-Za-z0-9._-]{1,128}$/.test(id.trim())) {
-      setFormError("考试 ID 只能包含字母、数字、点、下划线和连字符。");
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(hashtag.trim())) {
+      setFormError("考试 hashtag 只能包含字母、数字、点、下划线和连字符。");
       return;
     }
     try {
@@ -1811,9 +1810,8 @@ function ExamDialog({
     }
     setSaving(true);
     const body = {
-      id: id.trim(),
+      hashtag: hashtag.trim(),
       base_url: baseURL.trim(),
-      state,
       starts_at: starts ? new Date(starts).toISOString() : null,
       ends_at: ends ? new Date(ends).toISOString() : null,
       policy: policyValue,
@@ -1826,13 +1824,13 @@ function ExamDialog({
           })
         : await api.POST("/admin/api/exams", { body });
       if (result.error) {
-        setFormError("保存失败，请检查考试 ID、源站 URL 和管理员权限。");
+        setFormError("保存失败，请检查考试 hashtag、源站 URL 和管理员权限。");
         toast.add({ title: "保存考试失败", type: "error" });
         return;
       }
       toast.add({
         title: exam ? "考试已更新" : "考试已创建",
-        description: id.trim(),
+        description: `#${hashtag.trim()}`,
         type: "success",
       });
       onSaved();
@@ -1857,29 +1855,19 @@ function ExamDialog({
       >
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor="exam-id">考试 ID</Label>
+            <Label htmlFor="exam-hashtag">考试 hashtag</Label>
             <Input
-              id="exam-id"
-              value={id}
-              disabled={!!exam}
-              onChange={(event) => setId(event.target.value)}
+              id="exam-hashtag"
+              value={hashtag}
+              onChange={(event) => setHashtag(event.target.value)}
               placeholder="course-101"
             />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="exam-state">状态</Label>
-            <SelectField
-              value={state}
-              onValueChange={(value) => setState(value as Exam["state"])}
-              options={[
-                { value: "draft", label: "草稿" },
-                { value: "scheduled", label: "已排期" },
-                { value: "active", label: "进行中" },
-                { value: "ended", label: "已结束" },
-              ]}
-            />
+            <p className="text-xs text-slate-500">
+              用户可见的考试标签；内部 UUID 由服务端自动生成且不可修改。
+            </p>
           </div>
         </div>
+        {exam && <p className="-mt-2 font-mono text-xs text-slate-400">UUID: {exam.id} · 当前状态由服务端状态机管理：{stateLabel(exam.state)}</p>}
         <div className="space-y-2">
           <Label htmlFor="exam-base">源站 Base URL</Label>
           <Input
@@ -2018,7 +2006,7 @@ function StudentDialog({
       onClose={onClose}
       title="添加学生"
       description={
-        exam ? `将学生加入 ${exam.id} 的参加名单。` : "请先选择考试。"
+        exam ? `将学生加入 #${exam.hashtag} 的参加名单。` : "请先选择考试。"
       }
     >
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>

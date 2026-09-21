@@ -32,7 +32,9 @@ cookie。
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
-生产环境的每场考试源站通过管理后台写入 PostgreSQL 的 `byod_exams.base_url`，不通过环境变量传递。`base_url` 是考试开始后要打开的完整 HTTPS 页面 URL，例如 `https://cs101.gbu.edu.cn/paper/category/exam`；透明 tunnel 只使用它的 host/port 拨号，路径和查询参数由浏览器打开页面时使用，不做 TLS termination。`--upstream` 仅作为没有数据库记录时的本地开发回退值。
+生产环境的每场考试通过管理后台写入 PostgreSQL。每场考试由服务端生成不可变的 UUID 主键 `id`；管理员填写的 `hashtag` 只是用户可见、可修改的考试标签，不参与内部关联。`base_url` 是考试开始后要打开的完整 HTTPS 页面 URL，例如 `https://cs101.gbu.edu.cn/paper/category/exam`；透明 tunnel 只使用它的 host/port 拨号，路径和查询参数由浏览器打开页面时使用，不做 TLS termination。`--upstream` 仅作为没有数据库记录时的本地开发回退值。
+
+考试状态由后端状态机维护：新建为 `draft`，发布时按开始时间进入 `scheduled` 或 `active`，到达开始/结束时间后由服务端自动推进为 `active`/`ended`。管理端不能直接写入 `state`。
 
 每场考试的策略可以通过 `--policy-file` 或 `BYOD_POLICY_FILE` 覆盖，格式参考
 [`policy.example.json`](policy.example.json)。中台会强制覆盖 `exam_id` 和
@@ -141,7 +143,7 @@ Web 页面来源不会被允许调用会话接口。
 ## 联调流程
 
 1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
-2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试；学生不再输入考试码。
-3. 学生选择考试后，浏览器 `POST /v1/sessions` 创建已认证的作答 session。
+2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试（使用 UUID `id` 作为内部引用，使用 `hashtag` 展示）；学生不再输入考试码。
+3. 学生选择考试后，浏览器用 UUID `exam_id` 调用 `POST /v1/sessions` 创建已认证的作答 session。
 4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_url` 页面所在 origin 的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
 5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

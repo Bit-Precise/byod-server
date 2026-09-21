@@ -286,17 +286,25 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, id string, platformAdmin
 	return u, tx.Commit()
 }
 func (s *PostgresStore) UserAccess(ctx context.Context, issuer, subject, examID string) (bool, error) {
+	key, err := s.resolveExamID(ctx, examID)
+	if err != nil {
+		return false, err
+	}
 	var allowed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_users u JOIN byod_exam_participants p ON p.user_id=u.id WHERE u.issuer=$1 AND u.subject=$2 AND u.enabled AND p.exam_id=$3 AND p.enabled)`, issuer, subject, examID).Scan(&allowed)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_users u JOIN byod_exam_participants p ON p.user_id=u.id WHERE u.issuer=$1 AND u.subject=$2 AND u.enabled AND p.exam_id=$3 AND p.enabled)`, issuer, subject, key).Scan(&allowed)
 	return allowed, err
 }
 func (s *PostgresStore) SetParticipant(ctx context.Context, exam, id string, enabled bool, actor string) error {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO byod_exam_participants(exam_id,user_id,enabled) VALUES($1,$2,$3) ON CONFLICT(exam_id,user_id) DO UPDATE SET enabled=EXCLUDED.enabled`, exam, id, enabled); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO byod_exam_participants(exam_id,user_id,enabled) VALUES($1,$2,$3) ON CONFLICT(exam_id,user_id) DO UPDATE SET enabled=EXCLUDED.enabled`, key, id, enabled); err != nil {
 		return err
 	}
 	if err = auditUser(ctx, tx, actor, id, "exam_access_updated", string(canonicalJSON(map[string]any{"exam_id": exam, "enabled": enabled}))); err != nil {
@@ -305,16 +313,20 @@ func (s *PostgresStore) SetParticipant(ctx context.Context, exam, id string, ena
 	return tx.Commit()
 }
 func (s *PostgresStore) RemoveParticipant(ctx context.Context, exam, id, actor string) error {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_participants WHERE exam_id=$1 AND user_id=$2`, exam, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_participants WHERE exam_id=$1 AND user_id=$2`, key, id); err != nil {
 		return err
 	}
 	// Remove legacy eligibility too, so the next login cannot re-import it.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_students WHERE exam_id=$1 AND subject=(SELECT subject FROM byod_users WHERE id=$2)`, exam, id); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_students WHERE exam_id=$1 AND subject=(SELECT subject FROM byod_users WHERE id=$2)`, key, id); err != nil {
 		return err
 	}
 	if err = auditUser(ctx, tx, actor, id, "exam_access_removed", exam); err != nil {
@@ -323,7 +335,11 @@ func (s *PostgresStore) RemoveParticipant(ctx context.Context, exam, id, actor s
 	return tx.Commit()
 }
 func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Participant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY u.display_name,u.id`, exam)
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY u.display_name,u.id`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +362,11 @@ func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Pa
 }
 
 func (s *PostgresStore) ListExamAdmins(ctx context.Context, exam string) ([]ExamAdmin, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,a.enabled,a.created_at FROM byod_exam_admins a JOIN byod_users u ON u.id=a.user_id WHERE a.exam_id=$1 ORDER BY u.display_name,u.id`, exam)
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,a.enabled,a.created_at FROM byod_exam_admins a JOIN byod_users u ON u.id=a.user_id WHERE a.exam_id=$1 ORDER BY u.display_name,u.id`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -369,8 +389,12 @@ func (s *PostgresStore) ListExamAdmins(ctx context.Context, exam string) ([]Exam
 }
 
 func (s *PostgresStore) IsExamAdmin(ctx context.Context, exam, userID string) (bool, error) {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return false, err
+	}
 	var allowed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_admins WHERE exam_id=$1 AND user_id=$2 AND enabled)`, exam, userID).Scan(&allowed)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_exam_admins WHERE exam_id=$1 AND user_id=$2 AND enabled)`, key, userID).Scan(&allowed)
 	return allowed, err
 }
 
@@ -381,8 +405,12 @@ func (s *PostgresStore) HasExamAdmin(ctx context.Context, userID string) (bool, 
 }
 
 func (s *PostgresStore) CanManageExam(ctx context.Context, exam, userID string) (bool, error) {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return false, err
+	}
 	var allowed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$2 AND u.enabled AND (u.platform_admin OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=$1 AND a.user_id=u.id AND a.enabled)))`, exam, userID).Scan(&allowed)
+	err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$2 AND u.enabled AND (u.platform_admin OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=$1 AND a.user_id=u.id AND a.enabled)))`, key, userID).Scan(&allowed)
 	return allowed, err
 }
 
@@ -393,7 +421,10 @@ func (s *PostgresStore) CanManageSession(ctx context.Context, sessionID, userID 
 }
 
 func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]StoredExam, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT e.exam_id,e.exam_code,e.base_url,e.state,e.starts_at,e.ends_at,e.policy_json,e.updated_at::text FROM byod_exams e WHERE EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$1 AND u.platform_admin) OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=e.exam_id AND a.user_id=$1 AND a.enabled) ORDER BY e.exam_id`, userID)
+	if err := s.advanceExamStates(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.hashtag,btrim(e.exam_code),e.base_url,e.state,e.starts_at,e.ends_at,e.policy_json,e.updated_at::text FROM byod_exams e WHERE EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$1 AND u.platform_admin) OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=e.exam_id AND a.user_id=$1 AND a.enabled) ORDER BY e.hashtag`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +433,7 @@ func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]
 	for rows.Next() {
 		var x StoredExam
 		var p []byte
-		if err := rows.Scan(&x.ID, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(p, &x.Policy)
@@ -412,7 +443,10 @@ func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]
 }
 
 func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID string) ([]AvailableExam, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT e.exam_id,e.base_url,e.state,e.starts_at,e.ends_at,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=e.exam_id AND c.subject=COALESCE(u.subject,'')) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id JOIN byod_exams e ON e.exam_id=p.exam_id WHERE p.user_id=$1 AND p.enabled AND u.enabled ORDER BY COALESCE(e.starts_at,e.updated_at),e.exam_id`, userID)
+	if err := s.advanceExamStates(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.hashtag,e.base_url,e.state,e.starts_at,e.ends_at,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=e.exam_id AND c.subject=COALESCE(u.subject,'')) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id JOIN byod_exams e ON e.exam_id=p.exam_id WHERE p.user_id=$1 AND p.enabled AND u.enabled ORDER BY COALESCE(e.starts_at,e.updated_at),e.hashtag`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +454,7 @@ func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID st
 	var out []AvailableExam
 	for rows.Next() {
 		var exam AvailableExam
-		if err := rows.Scan(&exam.ID, &exam.BaseURL, &exam.State, &exam.StartsAt, &exam.EndsAt, &exam.Completed); err != nil {
+		if err := rows.Scan(&exam.ID, &exam.Hashtag, &exam.BaseURL, &exam.State, &exam.StartsAt, &exam.EndsAt, &exam.Completed); err != nil {
 			return nil, err
 		}
 		out = append(out, exam)
@@ -429,12 +463,16 @@ func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID st
 }
 
 func (s *PostgresStore) SetExamAdmin(ctx context.Context, exam, userID string, enabled bool, actor string) error {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO byod_exam_admins(exam_id,user_id,enabled) VALUES($1,$2,$3) ON CONFLICT(exam_id,user_id) DO UPDATE SET enabled=EXCLUDED.enabled`, exam, userID, enabled); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO byod_exam_admins(exam_id,user_id,enabled) VALUES($1,$2,$3) ON CONFLICT(exam_id,user_id) DO UPDATE SET enabled=EXCLUDED.enabled`, key, userID, enabled); err != nil {
 		return err
 	}
 	if err = auditUser(ctx, tx, actor, userID, "exam_admin_updated", string(canonicalJSON(map[string]any{"exam_id": exam, "enabled": enabled}))); err != nil {
@@ -444,12 +482,16 @@ func (s *PostgresStore) SetExamAdmin(ctx context.Context, exam, userID string, e
 }
 
 func (s *PostgresStore) RemoveExamAdmin(ctx context.Context, exam, userID, actor string) error {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_admins WHERE exam_id=$1 AND user_id=$2`, exam, userID); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM byod_exam_admins WHERE exam_id=$1 AND user_id=$2`, key, userID); err != nil {
 		return err
 	}
 	if err = auditUser(ctx, tx, actor, userID, "exam_admin_removed", exam); err != nil {

@@ -432,6 +432,7 @@ func (s *Service) configuration(examID string) map[string]any {
 		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
 	if s.ExamStore != nil {
 		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
+			exam["hashtag"] = stored.Hashtag
 			exam["state"] = stored.State
 			exam["starts_at"] = stored.StartsAt
 			exam["ends_at"] = stored.EndsAt
@@ -1147,26 +1148,24 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var input struct {
-			ID       string         `json:"id"`
+			Hashtag  string         `json:"hashtag"`
 			BaseURL  string         `json:"base_url"`
-			State    string         `json:"state"`
 			StartsAt *time.Time     `json:"starts_at"`
 			EndsAt   *time.Time     `json:"ends_at"`
 			Policy   map[string]any `json:"policy"`
 		}
-		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input) != nil || !validExamID(input.ID) {
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil || !validExamHashtag(input.Hashtag) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		if err := s.ExamStore.UpsertExamDetails(r.Context(), input.ID, input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+		exam, err := s.ExamStore.CreateExam(r.Context(), input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
+		if err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		if exam, ok, err := s.ExamStore.GetExam(r.Context(), input.ID); err == nil && ok {
-			s.writeJSON(w, http.StatusCreated, exam)
-		} else {
-			s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimSpace(input.BaseURL), "state": coalesceState(input.State)})
-		}
+		s.writeJSON(w, http.StatusCreated, exam)
 		return
 	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -1258,17 +1257,13 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 4 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" {
-		exams, err := s.ExamStore.ListExams(r.Context())
+		found, foundOK, err := s.ExamStore.GetExam(r.Context(), parts[3])
 		if err != nil {
 			s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database_error"})
 			return
 		}
-		var found *StoredExam
-		for i := range exams {
-			if exams[i].ID == parts[3] {
-				found = &exams[i]
-				break
-			}
+		if !foundOK {
+			found = nil
 		}
 		if r.Method == http.MethodGet {
 			if found == nil {
@@ -1292,25 +1287,24 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodPatch {
 			var input struct {
+				Hashtag  string         `json:"hashtag"`
 				BaseURL  string         `json:"base_url"`
-				State    string         `json:"state"`
 				StartsAt *time.Time     `json:"starts_at"`
 				EndsAt   *time.Time     `json:"ends_at"`
 				Policy   map[string]any `json:"policy"`
 			}
-			if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&input) != nil || input.BaseURL == "" {
+			decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&input) != nil || !validExamHashtag(input.Hashtag) || input.BaseURL == "" {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			if err := s.ExamStore.UpsertExamDetails(r.Context(), parts[3], input.BaseURL, input.State, input.StartsAt, input.EndsAt, input.Policy); err != nil {
+			updated, err := s.ExamStore.UpdateExam(r.Context(), parts[3], input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
+			if err != nil {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			if exam, ok, err := s.ExamStore.GetExam(r.Context(), parts[3]); err == nil && ok {
-				s.writeJSON(w, http.StatusOK, exam)
-			} else {
-				s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimSpace(input.BaseURL), "state": coalesceState(input.State)})
-			}
+			s.writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
@@ -1429,13 +1423,6 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
-}
-
-func coalesceState(state string) string {
-	if state == "draft" || state == "scheduled" || state == "active" || state == "ended" {
-		return state
-	}
-	return "draft"
 }
 
 func (s *Service) completeExamRequest(w http.ResponseWriter, r *http.Request, examID string) {
