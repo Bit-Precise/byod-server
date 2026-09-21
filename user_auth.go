@@ -190,6 +190,21 @@ func (s *Service) isExamUIReturnURI(raw string) bool {
 	query := target.Query()
 	return query.Get("auth") == "1" && len(query) == 1
 }
+
+func (s *Service) userLoginRedirectDestination(destination string) string {
+	if destination == "" {
+		return "/admin/"
+	}
+	// Windows Chromium may block an HTTPS OIDC callback that redirects
+	// directly to a custom scheme. Return to the same HTTPS origin with an
+	// auth marker; the native Grips navigation observer converts it to
+	// grips://exam.cs.ac.cn/?auth=1 in the current tab.
+	if isGripsExamUIReturnURI(destination) {
+		return strings.TrimRight(s.ExamOrigin, "/") + "/?auth=1"
+	}
+	return destination
+}
+
 func (s *Service) finishUserLogin(w http.ResponseWriter, r *http.Request, state, code string) bool {
 	if !strings.HasPrefix(state, "user-") {
 		return false
@@ -230,9 +245,7 @@ func (s *Service) finishUserLogin(w http.ResponseWriter, r *http.Request, state,
 	s.setUserCookie(w, s.loginCookieName(), token, 43200)
 	// All authenticated identities can land on the same control-center shell;
 	// the API applies platform/exam-admin capabilities per resource.
-	if destination == "" {
-		destination = "/admin/"
-	}
+	destination = s.userLoginRedirectDestination(destination)
 	http.Redirect(w, r, destination, http.StatusSeeOther)
 	return true
 }

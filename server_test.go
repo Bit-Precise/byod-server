@@ -223,8 +223,29 @@ func TestOIDCCallbackReturnsToGrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	callback.Body.Close()
-	if callback.StatusCode != http.StatusSeeOther || !strings.Contains(callback.Header.Get("Location"), "session_id=") {
-		t.Fatalf("callback did not return to grips: %d %s", callback.StatusCode, callback.Header.Get("Location"))
+	if callback.StatusCode != http.StatusSeeOther || callback.Header.Get("Location") != "/byod/complete?session_id="+url.QueryEscape(created["session_id"])+"&target=https%3A%2F%2Fexam.cs.ac.cn%2Fcourse-101" {
+		t.Fatalf("callback did not return to the control plane: %d %s", callback.StatusCode, callback.Header.Get("Location"))
+	}
+}
+
+func TestUserLoginRedirectDestination(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, input, expected string
+	}{
+		{"default admin", "", "/admin/"},
+		{"admin route", "/admin/exams", "/admin/exams"},
+		{"trusted grips shell", "grips://exam.cs.ac.cn/?auth=1", "https://exam.cs.ac.cn/?auth=1"},
+		{"legacy grips shell", "grips://exam/?auth=1", "https://exam.cs.ac.cn/?auth=1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if actual := service.userLoginRedirectDestination(test.input); actual != test.expected {
+				t.Fatalf("destination: got %q, want %q", actual, test.expected)
+			}
+		})
 	}
 }
 
