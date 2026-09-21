@@ -8,6 +8,7 @@ type ExamConfig = {
   exam: {
     id: string;
     origin: string;
+    source_url?: string;
     source_origin?: string;
     source_host?: string;
     proxy_origin: string;
@@ -128,6 +129,17 @@ function sourceOrigin(config: ExamConfig): URL {
   if (result.protocol !== 'https:' || !result.hostname || result.username ||
       result.password || result.pathname !== '/' && result.pathname !== '') {
     throw new Error('exam source origin is invalid');
+  }
+  return result;
+}
+
+function sourcePage(config: ExamConfig): URL {
+  const value = config.exam.source_url || config.exam.source_origin;
+  if (!value) throw new Error('exam source page is missing');
+  const result = new URL(value);
+  if (result.protocol !== 'https:' || !result.hostname || result.username ||
+      result.password || result.hash) {
+    throw new Error('exam source page is invalid');
   }
   return result;
 }
@@ -438,10 +450,7 @@ function showReady(target: URL, config: ExamConfig, sessionID: string) {
     updateCountdown(config.exam.ends_at, 'Time remaining');
   }
   launch.onclick = () => {
-    const destination = sourceOrigin(config);
-    const targetURL = new URL(target.href);
-    destination.pathname = targetURL.pathname;
-    destination.search = targetURL.search;
+    const destination = sourcePage(config);
     if (embeddedInBrowserShell)
       window.top!.location.href = destination.href;
     else

@@ -7,7 +7,6 @@ import (
 	"errors"
 	_ "github.com/lib/pq"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -202,9 +201,9 @@ func (s *PostgresStore) UpsertExamDetailsWithCode(ctx context.Context, id, code,
 	if code != "" && !validExamCode(code) {
 		return errors.New("invalid exam code")
 	}
-	u, err := url.Parse(base)
-	if err != nil || u.Host == "" || u.Scheme != "https" || u.User != nil || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
-		return errors.New("invalid base_url: transparent exam upstream must be an HTTPS origin")
+	u, err := parseUpstreamURL(base, true)
+	if err != nil {
+		return errors.New("invalid base_url: transparent exam upstream must be an HTTPS URL without credentials or fragment")
 	}
 	if state == "" {
 		state = "draft"
@@ -241,7 +240,7 @@ func (s *PostgresStore) UpsertExamDetailsWithCode(ctx context.Context, id, code,
 			return err
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(exam_id,exam_code,base_url,state,starts_at,ends_at,policy_json)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(exam_id)DO UPDATE SET exam_code=CASE WHEN $2 <> '' THEN EXCLUDED.exam_code ELSE byod_exams.exam_code END,base_url=EXCLUDED.base_url,state=EXCLUDED.state,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,policy_json=EXCLUDED.policy_json,updated_at=now()`, id, code, strings.TrimRight(base, "/"), state, start, end, p)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(exam_id,exam_code,base_url,state,starts_at,ends_at,policy_json)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(exam_id)DO UPDATE SET exam_code=CASE WHEN $2 <> '' THEN EXCLUDED.exam_code ELSE byod_exams.exam_code END,base_url=EXCLUDED.base_url,state=EXCLUDED.state,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at,policy_json=EXCLUDED.policy_json,updated_at=now()`, id, code, u.String(), state, start, end, p)
 	return err
 }
 

@@ -81,6 +81,24 @@ func TestConfigurationAndLifecycle(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestConfigurationIncludesConfiguredSourcePageURL(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "https://cs101.gbu.edu.cn/paper/category/exam?attempt=1", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := service.configuration("course-101")
+	exam := config["exam"].(map[string]any)
+	if got := exam["source_url"]; got != "https://cs101.gbu.edu.cn/paper/category/exam?attempt=1" {
+		t.Fatalf("configured source page URL was not preserved: %#v", got)
+	}
+	if got := exam["source_origin"]; got != "https://cs101.gbu.edu.cn" {
+		t.Fatalf("source origin included page URL: %#v", got)
+	}
+	if got := exam["source_host"]; got != "cs101.gbu.edu.cn" {
+		t.Fatalf("unexpected source host: %#v", got)
+	}
+}
+
 func TestTrustedGripsExamReturnURI(t *testing.T) {
 	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
 	if err != nil {
@@ -645,6 +663,26 @@ func TestParseExamUpstreamsRejectsUnsafeURL(t *testing.T) {
 	}
 	if _, err := ParseExamUpstreams([]byte(`{"../course":"https://example.test"}`)); err == nil {
 		t.Fatal("expected unsafe exam ID to be rejected")
+	}
+}
+
+func TestParseExamUpstreamsPreservesSourcePageURL(t *testing.T) {
+	configured, err := ParseExamUpstreams([]byte(`{"course-101":"https://example.test/paper/category/exam?attempt=1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configured["course-101"].String(); got != "https://example.test/paper/category/exam?attempt=1" {
+		t.Fatalf("source page URL was not preserved: %q", got)
+	}
+}
+
+func TestParseUpstreamURLForTransparentSourceAllowsPagePath(t *testing.T) {
+	u, err := parseUpstreamURL("https://cs101.gbu.edu.cn/paper/category/exam", true)
+	if err != nil || u.String() != "https://cs101.gbu.edu.cn/paper/category/exam" {
+		t.Fatalf("page URL rejected or changed: %v %v", u, err)
+	}
+	if _, err := parseUpstreamURL("https://cs101.gbu.edu.cn/exam#fragment", true); err == nil {
+		t.Fatal("fragment accepted in source page URL")
 	}
 }
 

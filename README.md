@@ -32,7 +32,7 @@ cookie。
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
-生产环境的每场考试源站通过管理后台写入 PostgreSQL 的 `byod_exams.base_url`，不通过环境变量传递。启用透明 tunnel 时，`base_url` 必须是没有路径/查询的 HTTPS origin（服务端只拨号到该 origin 的 443/显式端口，不做 TLS termination）；`--upstream` 仅作为没有数据库记录时的本地开发回退值。
+生产环境的每场考试源站通过管理后台写入 PostgreSQL 的 `byod_exams.base_url`，不通过环境变量传递。`base_url` 是考试开始后要打开的完整 HTTPS 页面 URL，例如 `https://cs101.gbu.edu.cn/paper/category/exam`；透明 tunnel 只使用它的 host/port 拨号，路径和查询参数由浏览器打开页面时使用，不做 TLS termination。`--upstream` 仅作为没有数据库记录时的本地开发回退值。
 
 每场考试的策略可以通过 `--policy-file` 或 `BYOD_POLICY_FILE` 覆盖，格式参考
 [`policy.example.json`](policy.example.json)。中台会强制覆盖 `exam_id` 和
@@ -143,5 +143,5 @@ Web 页面来源不会被允许调用会话接口。
 1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
 2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试；学生不再输入考试码。
 3. 学生选择考试后，浏览器 `POST /v1/sessions` 创建已认证的作答 session。
-4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_origin` 的 HTTPS 请求通过 L4 tunnel 转发；服务端不会终止或修改源站 TLS。
+4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_url` 页面所在 origin 的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
 5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

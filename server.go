@@ -148,13 +148,33 @@ func (s *Service) upstreamForExam(ctx context.Context, examID string) (*url.URL,
 	return s.Upstream, nil
 }
 
+// parseUpstreamURL validates an operator-supplied upstream.  The URL's
+// authority selects the transparent TLS dial target; its path and query are
+// the initial page that the browser opens after the exam starts.
+func parseUpstreamURL(raw string, requireHTTPS bool) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Hostname() == "" || u.Opaque != "" ||
+		u.User != nil || u.Fragment != "" {
+		return nil, errors.New("upstream must be an absolute URL without credentials or fragment")
+	}
+	if requireHTTPS {
+		if u.Scheme != "https" {
+			return nil, errors.New("upstream must use HTTPS")
+		}
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, errors.New("upstream must use HTTP or HTTPS")
+	}
+	return u, nil
+}
+
 func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 	origin, err := url.Parse(examOrigin)
 	if err != nil || origin.Host == "" || (origin.Scheme != "http" && origin.Scheme != "https") {
 		return nil, errors.New("exam origin must be an absolute HTTP(S) URL")
 	}
-	base, err := url.Parse(upstream)
-	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {
+	base, err := parseUpstreamURL(upstream, false)
+	if err != nil {
 		return nil, errors.New("upstream must be an absolute HTTP(S) URL")
 	}
 	return &Service{ExamOrigin: strings.TrimRight(examOrigin, "/"), Upstream: base,
@@ -167,8 +187,8 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 }
 
 // ParseExamUpstreams parses an operator-supplied JSON object mapping exam IDs
-// to absolute HTTP(S) base URLs, for example:
-// {"course-101":"https://cs101.gbu.edu.cn"}.
+// to absolute HTTP(S) source page URLs, for example:
+// {"course-101":"https://cs101.gbu.edu.cn/paper/category/exam"}.
 func ParseExamUpstreams(data []byte) (map[string]*url.URL, error) {
 	var configured map[string]string
 	if err := json.Unmarshal(data, &configured); err != nil {
@@ -179,11 +199,10 @@ func ParseExamUpstreams(data []byte) (map[string]*url.URL, error) {
 		if !validExamID(examID) {
 			return nil, fmt.Errorf("invalid exam upstream id %q", examID)
 		}
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+		parsed, err := parseUpstreamURL(rawURL, false)
+		if err != nil {
 			return nil, fmt.Errorf("exam upstream for %q must be an absolute HTTP(S) URL without credentials or fragment", examID)
 		}
-		parsed.Path = strings.TrimRight(parsed.Path, "/")
 		result[examID] = parsed
 	}
 	return result, nil
@@ -216,13 +235,14 @@ func (s *Service) sign(document map[string]any) string {
 }
 
 func (s *Service) policy(examID string) map[string]any {
-	sourceOrigin, sourceHost := s.sourceOrigin(examID)
+	sourceURL, sourceOrigin, sourceHost := s.sourceDetails(examID)
 	document := map[string]any{
 		"version": 1, "exam_id": examID,
 		"allowed_origins": []string{s.ExamOrigin, sourceOrigin},
 		"allowed_paths":   []string{"/" + examID + "/**"},
 		"source": map[string]any{
 			"origin":      sourceOrigin,
+			"url":         sourceURL,
 			"host":        sourceHost,
 			"endpoint_id": examID,
 			"transport":   "byod-tunnel-v1",
@@ -298,13 +318,26 @@ func (s *Service) policy(examID string) map[string]any {
 // upstream. The browser uses this value as the inner TLS server name; the
 // tunnel endpoint itself is selected by the session's endpoint_id.
 func (s *Service) sourceOrigin(examID string) (origin, host string) {
+	_, origin, host = s.sourceDetails(examID)
+	return origin, host
+}
+
+// sourceDetails separates the browser-facing page URL from the origin used
+// for navigation policy and the host used to select the transparent tunnel.
+func (s *Service) sourceDetails(examID string) (page, origin, host string) {
 	upstream, err := s.upstreamForExam(context.Background(), examID)
 	if err != nil || upstream == nil || upstream.Hostname() == "" {
-		return "", ""
+		return "", "", ""
 	}
 	host = upstream.Hostname()
-	origin = upstream.Scheme + "://" + upstream.Host
-	return strings.TrimRight(origin, "/"), host
+	pageURL := *upstream
+	originURL := *upstream
+	originURL.Path = ""
+	originURL.RawPath = ""
+	originURL.RawQuery = ""
+	originURL.ForceQuery = false
+	originURL.Fragment = ""
+	return pageURL.String(), originURL.String(), host
 }
 
 func mergePolicyValue(document map[string]any, key string, value any) {
@@ -392,10 +425,10 @@ func (s *Service) configuration(examID string) map[string]any {
 		authorizeEndpoint = s.OIDC.OAuth2.Endpoint.AuthURL
 		clientID = s.OIDC.ClientID
 	}
-	sourceOrigin, sourceHost := s.sourceOrigin(examID)
+	sourceURL, sourceOrigin, sourceHost := s.sourceDetails(examID)
 	exam := map[string]any{"id": examID, "origin": s.ExamOrigin,
 		"proxy_origin": s.ExamOrigin, "unlock_path": "/" + examID + "/end",
-		"source_origin": sourceOrigin, "source_host": sourceHost,
+		"source_url": sourceURL, "source_origin": sourceOrigin, "source_host": sourceHost,
 		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
 	if s.ExamStore != nil {
 		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
@@ -1132,7 +1165,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		if exam, ok, err := s.ExamStore.GetExam(r.Context(), input.ID); err == nil && ok {
 			s.writeJSON(w, http.StatusCreated, exam)
 		} else {
-			s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+			s.writeJSON(w, http.StatusCreated, map[string]any{"id": input.ID, "base_url": strings.TrimSpace(input.BaseURL), "state": coalesceState(input.State)})
 		}
 		return
 	}
@@ -1276,7 +1309,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			if exam, ok, err := s.ExamStore.GetExam(r.Context(), parts[3]); err == nil && ok {
 				s.writeJSON(w, http.StatusOK, exam)
 			} else {
-				s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimRight(input.BaseURL, "/"), "state": coalesceState(input.State)})
+				s.writeJSON(w, http.StatusOK, map[string]any{"id": parts[3], "base_url": strings.TrimSpace(input.BaseURL), "state": coalesceState(input.State)})
 			}
 			return
 		}

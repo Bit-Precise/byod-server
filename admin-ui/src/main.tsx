@@ -1802,11 +1802,11 @@ function ExamDialog({
     }
     try {
       const parsed = new URL(baseURL.trim());
-      if (parsed.protocol !== "https:" || (parsed.pathname !== "" && parsed.pathname !== "/") || parsed.search || parsed.hash || parsed.username || parsed.password) {
+      if (parsed.protocol !== "https:" || parsed.hash || parsed.username || parsed.password) {
         throw new Error("unsupported protocol");
       }
     } catch {
-      setFormError("透明 TLS 源站必须是 HTTPS origin（不能带路径、查询参数或凭据），例如 https://cs101.gbu.edu.cn。");
+      setFormError("透明 TLS 源站必须是 HTTPS URL（可带页面路径，但不能带凭据或 fragment），例如 https://cs101.gbu.edu.cn/paper/category/exam。");
       return;
     }
     setSaving(true);
@@ -1887,10 +1887,10 @@ function ExamDialog({
             type="url"
             value={baseURL}
             onChange={(event) => setBaseURL(event.target.value)}
-            placeholder="https://cs101.gbu.edu.cn"
+            placeholder="https://cs101.gbu.edu.cn/paper/category/exam"
           />
           <p className="text-xs text-slate-500">
-            必须是 http(s) URL；考试页面的 HTTPS 请求将通过透明 tunnel 回源。
+            使用考试开始后要打开的完整 HTTPS 页面 URL；请求仍通过透明 tunnel 回源。
           </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
