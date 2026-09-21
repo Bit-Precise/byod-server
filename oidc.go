@@ -29,6 +29,8 @@ type OIDCIdentity struct {
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
+	Nickname      string `json:"nickname"`
+	Picture       string `json:"picture"`
 }
 
 func NewOIDCAuthenticator(ctx context.Context, issuer, clientID, clientSecret, redirectURL string) (*OIDCAuthenticator, error) {
@@ -106,16 +108,26 @@ func (a *OIDCAuthenticator) exchangeIdentity(ctx context.Context, code, verifier
 	identity.Issuer = idToken.Issuer
 	// Some providers expose email only on UserInfo. Never trust its claims
 	// unless its subject matches the verified ID token.
-	if !identity.EmailVerified || identity.Email == "" {
+	if !identity.EmailVerified || identity.Email == "" || identity.Nickname == "" || identity.Picture == "" {
 		if info, err := a.Provider.UserInfo(ctx, oauth2.StaticTokenSource(token)); err == nil && info.Subject == identity.Subject {
 			if info.EmailVerified {
 				identity.Email, identity.EmailVerified = info.Email, true
 			}
 			var profile struct {
-				Name string `json:"name"`
+				Name     string `json:"name"`
+				Nickname string `json:"nickname"`
+				Picture  string `json:"picture"`
 			}
-			if info.Claims(&profile) == nil && identity.Name == "" {
-				identity.Name = profile.Name
+			if info.Claims(&profile) == nil {
+				if identity.Name == "" {
+					identity.Name = profile.Name
+				}
+				if identity.Nickname == "" {
+					identity.Nickname = profile.Nickname
+				}
+				if identity.Picture == "" {
+					identity.Picture = profile.Picture
+				}
 			}
 		}
 	}

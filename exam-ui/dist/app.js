@@ -243,6 +243,10 @@ function formatTime(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? 'not set' : date.toLocaleString();
 }
+function examName(config) {
+    const name = config.exam.name?.trim();
+    return name || `#${config.exam.hashtag || config.exam.id}`;
+}
 function updateCountdown(deadline, prefix) {
     if (!deadline) {
         countdownElement.textContent = '';
@@ -295,7 +299,7 @@ async function reportViolation(examOrigin, sessionId, token, type) {
     });
 }
 function showWaiting(target, config, sessionID) {
-    title.textContent = 'Exam session authenticated';
+    title.textContent = examName(config);
     message.textContent = 'Identity verified. The exam will unlock at the scheduled start time.';
     targetElement.textContent = target.href;
     targetSection.hidden = false;
@@ -316,7 +320,7 @@ function showWaiting(target, config, sessionID) {
 }
 function showConfirm(target, config, sessionID) {
     clearTimers();
-    title.textContent = 'Ready to enter the exam';
+    title.textContent = examName(config);
     message.textContent = 'The exam is open. Confirm to start your attempt and enter the exam.';
     targetElement.textContent = target.href;
     targetSection.hidden = false;
@@ -334,7 +338,7 @@ function showConfirm(target, config, sessionID) {
 }
 function showReady(target, config, sessionID) {
     clearTimers();
-    title.textContent = 'Exam in progress';
+    title.textContent = examName(config);
     message.textContent = 'The signed exam policy is active. Submit when you finish.';
     targetElement.textContent = target.href;
     targetSection.hidden = false;
@@ -568,9 +572,9 @@ function showExamChoices(exams) {
         button.className = 'exam-choice';
         button.disabled = exam.completed || exam.state === 'ended';
         const titleNode = document.createElement('strong');
-        titleNode.textContent = `#${exam.hashtag}`;
+        titleNode.textContent = exam.name;
         const detail = document.createElement('small');
-        detail.textContent = `${examLabel(exam)} · starts ${formatTime(exam.starts_at)} · ends ${formatTime(exam.ends_at)}`;
+        detail.textContent = `#${exam.hashtag} · ${examLabel(exam)} · starts ${formatTime(exam.starts_at)} · ends ${formatTime(exam.ends_at)}`;
         button.append(titleNode, detail);
         button.onclick = () => void selectExam(exam);
         examList.append(button);

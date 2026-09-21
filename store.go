@@ -7,6 +7,7 @@ import (
 	"errors"
 	_ "github.com/lib/pq"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,7 @@ func (s *PostgresStore) Ping(ctx context.Context) error { return s.db.PingContex
 
 type StoredExam struct {
 	ID      string `json:"id"`
+	Name    string `json:"name"`
 	Hashtag string `json:"hashtag"`
 	// ExamCode is retained in the durable model only for migrations from the
 	// former code-entry flow. It is deliberately not part of any API response;
@@ -36,6 +38,7 @@ type StoredExam struct {
 // after OIDC based on their durable participant assignment.
 type AvailableExam struct {
 	ID        string     `json:"id"`
+	Name      string     `json:"name"`
 	Hashtag   string     `json:"hashtag"`
 	BaseURL   string     `json:"base_url"`
 	State     string     `json:"state"`
@@ -105,7 +108,7 @@ func MigratePostgres(ctx context.Context, databaseURL string) error {
 		return err
 	}
 	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS byod_schema_migrations(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS byod_exams(exam_id TEXT PRIMARY KEY,exam_code CHAR(8),base_url TEXT NOT NULL,policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,state TEXT NOT NULL DEFAULT 'draft',starts_at TIMESTAMPTZ,ends_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS byod_exams(exam_id TEXT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',exam_code CHAR(8),base_url TEXT NOT NULL,policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,state TEXT NOT NULL DEFAULT 'draft',starts_at TIMESTAMPTZ,ends_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS byod_exam_students(exam_id TEXT NOT NULL REFERENCES byod_exams(exam_id) ON DELETE CASCADE,subject TEXT NOT NULL,display_name TEXT NOT NULL DEFAULT '',enabled BOOLEAN NOT NULL DEFAULT true,PRIMARY KEY(exam_id,subject));
 CREATE TABLE IF NOT EXISTS byod_exam_completions(exam_id TEXT NOT NULL REFERENCES byod_exams(exam_id) ON DELETE CASCADE,subject TEXT NOT NULL,session_id TEXT NOT NULL,completed_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(exam_id,subject));
 CREATE TABLE IF NOT EXISTS byod_sessions(id TEXT PRIMARY KEY,exam_id TEXT NOT NULL,attempt_id TEXT NOT NULL DEFAULT '',browser_session_id TEXT NOT NULL DEFAULT '',subject TEXT NOT NULL DEFAULT '',state TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL,last_seen_at TIMESTAMPTZ NOT NULL,violation_count INTEGER NOT NULL DEFAULT 0);
@@ -117,11 +120,16 @@ CREATE INDEX IF NOT EXISTS byod_sessions_token_hash_idx ON byod_sessions(browser
 CREATE INDEX IF NOT EXISTS byod_events_session_occurred_idx ON byod_events(session_id,occurred_at);
 CREATE INDEX IF NOT EXISTS byod_tunnel_tickets_session_idx ON byod_tunnel_tickets(session_id,expires_at);
 ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS exam_code CHAR(8);ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'draft';ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_sessions ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';ALTER TABLE byod_events ADD COLUMN IF NOT EXISTS browser_session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 UPDATE byod_exams SET exam_code=upper(substr(md5(exam_id),1,8)) WHERE exam_code IS NULL OR btrim(exam_code)='';
 ALTER TABLE byod_exams ALTER COLUMN exam_code SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS byod_exams_exam_code_idx ON byod_exams(exam_code);
 INSERT INTO byod_schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;
 `+userSchema+examIdentityMigration)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, examProfileMigration)
 	return err
 }
 
@@ -169,11 +177,28 @@ BEGIN
 END $$;
 `
 
+// examProfileMigration adds the human-readable exam name and OIDC profile
+// fields without changing the UUID identity or any dependent rows. Existing
+// exams use their hashtag as a safe migration default; administrators can
+// immediately replace it with a descriptive name.
+const examProfileMigration = `
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM byod_schema_migrations WHERE version=4) THEN
+    ALTER TABLE byod_exams ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+    UPDATE byod_exams SET name=hashtag WHERE btrim(name)='';
+    ALTER TABLE byod_users ADD COLUMN IF NOT EXISTS nickname TEXT NOT NULL DEFAULT '';
+    ALTER TABLE byod_users ADD COLUMN IF NOT EXISTS picture TEXT NOT NULL DEFAULT '';
+    INSERT INTO byod_schema_migrations(version) VALUES(4);
+  END IF;
+END $$;
+`
+
 func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
 	if err := s.advanceExamStates(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams ORDER BY hashtag`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,name,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams ORDER BY name,hashtag`)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +207,7 @@ func (s *PostgresStore) ListExams(ctx context.Context) ([]StoredExam, error) {
 	for rows.Next() {
 		var x StoredExam
 		var p []byte
-		if err := rows.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(p, &x.Policy)
@@ -219,14 +244,22 @@ func (s *PostgresStore) resolveExamID(ctx context.Context, ref string) (string, 
 func (s *PostgresStore) scanExam(row scanner) (*StoredExam, error) {
 	var x StoredExam
 	var p []byte
-	if err := row.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+	if err := row.Scan(&x.ID, &x.Name, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal(p, &x.Policy)
 	return &x, nil
 }
 
-func (s *PostgresStore) validateExamDefinition(hashtag, base string, start, end *time.Time, policy map[string]any) (*url.URL, []byte, error) {
+func validExamName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name != "" && len(name) <= 256
+}
+
+func (s *PostgresStore) validateExamDefinition(name, hashtag, base string, start, end *time.Time, policy map[string]any) (*url.URL, []byte, error) {
+	if !validExamName(name) {
+		return nil, nil, errors.New("invalid exam name")
+	}
 	if !validExamHashtag(hashtag) {
 		return nil, nil, errors.New("invalid hashtag")
 	}
@@ -247,8 +280,14 @@ func (s *PostgresStore) validateExamDefinition(hashtag, base string, start, end 
 	return u, p, nil
 }
 
+// CreateExam is retained for callers of the pre-name store API. New callers
+// should use CreateExamNamed so the title and hashtag remain independent.
 func (s *PostgresStore) CreateExam(ctx context.Context, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
-	u, p, err := s.validateExamDefinition(hashtag, base, start, end, policy)
+	return s.CreateExamNamed(ctx, hashtag, hashtag, base, start, end, policy)
+}
+
+func (s *PostgresStore) CreateExamNamed(ctx context.Context, name, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
+	u, p, err := s.validateExamDefinition(name, hashtag, base, start, end, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +299,7 @@ func (s *PostgresStore) CreateExam(ctx context.Context, hashtag, base string, st
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(id,exam_id,hashtag,exam_code,base_url,state,starts_at,ends_at,policy_json) VALUES($1::uuid,$1::text,$2,$3,$4,'draft',$5,$6,$7)`, id, hashtag, code, u.String(), start, end, p)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_exams(id,exam_id,name,hashtag,exam_code,base_url,state,starts_at,ends_at,policy_json) VALUES($1::uuid,$1::text,$2,$3,$4,$5,'draft',$6,$7,$8)`, id, name, hashtag, code, u.String(), start, end, p)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +313,7 @@ func (s *PostgresStore) CreateExam(ctx context.Context, hashtag, base string, st
 	return exam, nil
 }
 
+// UpdateExam is retained for callers of the pre-name store API.
 func (s *PostgresStore) UpdateExam(ctx context.Context, ref, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
 	existing, ok, err := s.GetExam(ctx, ref)
 	if err != nil {
@@ -282,11 +322,22 @@ func (s *PostgresStore) UpdateExam(ctx context.Context, ref, hashtag, base strin
 	if !ok {
 		return nil, sql.ErrNoRows
 	}
-	u, p, err := s.validateExamDefinition(hashtag, base, start, end, policy)
+	return s.UpdateExamNamed(ctx, existing.ID, existing.Name, hashtag, base, start, end, policy)
+}
+
+func (s *PostgresStore) UpdateExamNamed(ctx context.Context, ref, name, hashtag, base string, start, end *time.Time, policy map[string]any) (*StoredExam, error) {
+	existing, ok, err := s.GetExam(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET hashtag=$2,base_url=$3,starts_at=$4,ends_at=$5,policy_json=$6,updated_at=now() WHERE id=$1`, existing.ID, hashtag, u.String(), start, end, p)
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	u, p, err := s.validateExamDefinition(name, hashtag, base, start, end, policy)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE byod_exams SET name=$2,hashtag=$3,base_url=$4,starts_at=$5,ends_at=$6,policy_json=$7,updated_at=now() WHERE id=$1`, existing.ID, name, hashtag, u.String(), start, end, p)
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +437,7 @@ func (s *PostgresStore) UpsertExamDetailsWithCode(ctx context.Context, id, code,
 	if existing, ok, err := s.GetExam(ctx, id); err != nil {
 		return err
 	} else if ok {
-		u, p, err := s.validateExamDefinition(existing.Hashtag, base, start, end, policy)
+		u, p, err := s.validateExamDefinition(existing.Name, existing.Hashtag, base, start, end, policy)
 		if err != nil {
 			return err
 		}
@@ -420,7 +471,7 @@ func (s *PostgresStore) GetExam(ctx context.Context, id string) (*StoredExam, bo
 	if err := s.advanceExamStates(ctx); err != nil {
 		return nil, false, err
 	}
-	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE id::text=$1 OR hashtag=$1 OR exam_id=$1`, id))
+	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,name,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE id::text=$1 OR hashtag=$1 OR exam_id=$1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -434,7 +485,7 @@ func (s *PostgresStore) ExamByCode(ctx context.Context, code string) (*StoredExa
 	if err := s.advanceExamStates(ctx); err != nil {
 		return nil, false, err
 	}
-	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE upper(btrim(exam_code))=$1`, normalizeExamCode(code)))
+	x, err := s.scanExam(s.db.QueryRowContext(ctx, `SELECT id::text,name,hashtag,btrim(exam_code),base_url,state,starts_at,ends_at,policy_json,updated_at::text FROM byod_exams WHERE upper(btrim(exam_code))=$1`, normalizeExamCode(code)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

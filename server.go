@@ -432,6 +432,7 @@ func (s *Service) configuration(examID string) map[string]any {
 		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
 	if s.ExamStore != nil {
 		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
+			exam["name"] = stored.Name
 			exam["hashtag"] = stored.Hashtag
 			exam["state"] = stored.State
 			exam["starts_at"] = stored.StartsAt
@@ -1148,6 +1149,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var input struct {
+			Name     string         `json:"name"`
 			Hashtag  string         `json:"hashtag"`
 			BaseURL  string         `json:"base_url"`
 			StartsAt *time.Time     `json:"starts_at"`
@@ -1156,11 +1158,11 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&input) != nil || !validExamHashtag(input.Hashtag) {
+		if decoder.Decode(&input) != nil || !validExamName(input.Name) || !validExamHashtag(input.Hashtag) {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
 		}
-		exam, err := s.ExamStore.CreateExam(r.Context(), input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
+		exam, err := s.ExamStore.CreateExamNamed(r.Context(), input.Name, input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
 		if err != nil {
 			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 			return
@@ -1287,6 +1289,7 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == http.MethodPatch {
 			var input struct {
+				Name     string         `json:"name"`
 				Hashtag  string         `json:"hashtag"`
 				BaseURL  string         `json:"base_url"`
 				StartsAt *time.Time     `json:"starts_at"`
@@ -1295,11 +1298,11 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			}
 			decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
 			decoder.DisallowUnknownFields()
-			if decoder.Decode(&input) != nil || !validExamHashtag(input.Hashtag) || input.BaseURL == "" {
+			if decoder.Decode(&input) != nil || !validExamName(input.Name) || !validExamHashtag(input.Hashtag) || input.BaseURL == "" {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return
 			}
-			updated, err := s.ExamStore.UpdateExam(r.Context(), parts[3], input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
+			updated, err := s.ExamStore.UpdateExamNamed(r.Context(), parts[3], input.Name, input.Hashtag, input.BaseURL, input.StartsAt, input.EndsAt, input.Policy)
 			if err != nil {
 				s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_exam"})
 				return

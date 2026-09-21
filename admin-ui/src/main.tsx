@@ -29,7 +29,6 @@ import {
   Server,
   ShieldCheck,
   SlidersHorizontal,
-  UserRound,
   Users,
   Wifi,
   X,
@@ -63,7 +62,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "./components/ui/alert-dialog";
-import { Avatar, AvatarFallback } from "./components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -112,7 +111,7 @@ import { cn } from "./lib/utils";
 import "./index.css";
 
 type Exam = components["schemas"]["Exam"];
-type Student = components["schemas"]["Student"];
+type Student = components["schemas"]["Participant"];
 type Session = components["schemas"]["Session"];
 type Event = components["schemas"]["Event"];
 type ExamAdmin = components["schemas"]["ExamAdmin"];
@@ -239,6 +238,14 @@ function StateBadge({ state }: { state: string }) {
   return <Badge variant={variant}>{stateLabel(state)}</Badge>;
 }
 
+function profileLabel(user: components["schemas"]["User"]) {
+  return user.nickname || user.display_name || user.email || user.id;
+}
+
+function profileInitial(user: components["schemas"]["User"]) {
+  return Array.from(profileLabel(user).trim())[0] || "?";
+}
+
 function App() {
   const [user, setUser] = useState<components["schemas"]["User"] | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -359,7 +366,7 @@ function App() {
       if (controller.signal.aborted) return;
       setParticipants({
         examId,
-        students: (result.data || []).map((item) => ({ subject: item.user.id, display_name: item.user.email || item.user.display_name, enabled: item.enabled })),
+        students: result.data || [],
         admins: adminsResult.data || [],
       });
       if (result.error || adminsResult.error) setError("无法加载考试名单或管理员，请检查权限后重试。");
@@ -1093,7 +1100,7 @@ function ExamsPage({
   const filtered = exams.filter(
     (exam) =>
       (!query ||
-        `${exam.hashtag} ${exam.id} ${exam.base_url}`
+        `${exam.name} ${exam.hashtag} ${exam.id} ${exam.base_url}`
           .toLowerCase()
           .includes(query.toLowerCase())) &&
       (filter === "all" || exam.state === filter),
@@ -1168,7 +1175,8 @@ function ExamsPage({
                   className={selected?.id === exam.id ? "bg-indigo-50/40" : ""}
                 >
                   <TableCell>
-                    <p className="font-medium text-slate-900">#{exam.hashtag}</p>
+                    <p className="font-medium text-slate-900">{exam.name}</p>
+                    <p className="text-xs text-slate-500">#{exam.hashtag}</p>
                     <p className="font-mono text-[11px] text-slate-400">{exam.id}</p>
                     <p className="text-xs text-slate-500">
                       学生登录后从已分配考试中选择
@@ -1280,7 +1288,7 @@ function StudentsPage({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle>
-                {selected ? `#${selected.hashtag} · 参加名单` : "选择一场考试"}
+                {selected ? `${selected.name} · #${selected.hashtag} · 参加名单` : "选择一场考试"}
               </CardTitle>
               <CardDescription>
                 {selected
@@ -1299,7 +1307,7 @@ function StudentsPage({
                 }}
                 options={exams.map((exam) => ({
                   value: exam.id,
-                  label: `#${exam.hashtag}`,
+                  label: `${exam.name} · #${exam.hashtag}`,
                 }))}
               />
             )}
@@ -1317,7 +1325,10 @@ function StudentsPage({
               <div className="mb-4 flex flex-wrap gap-2">
                 {examAdmins.map((admin) => (
                   <Badge key={admin.user.id} variant="warning" className="gap-2 py-1">
-                    {admin.user.email || admin.user.display_name || admin.user.id}
+                    <span className="inline-flex items-center gap-1.5">
+                      <Avatar size="sm"><AvatarImage src={admin.user.picture || undefined} /><AvatarFallback>{profileInitial(admin.user)}</AvatarFallback></Avatar>
+                      {profileLabel(admin.user)}
+                    </span>
                     <button type="button" className="text-amber-900/70 hover:text-amber-950" onClick={() => void (async () => {
                       const result = await api.DELETE("/admin/api/exams/{examId}/admins/{userId}", { params: { path: { examId: selected.id, userId: admin.user.id } } });
                       if (result.error) toast.add({ title: "撤销考试管理员失败", type: "error" }); else onRefresh();
@@ -1354,7 +1365,7 @@ function StudentsPage({
               <TableHeader>
                 <TableRow>
                   <TableHead>学生</TableHead>
-                  <TableHead>OIDC Subject</TableHead>
+                  <TableHead>OIDC 昵称 / Subject</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead className="text-right">操作</TableHead>
                 </TableRow>
@@ -1362,7 +1373,7 @@ function StudentsPage({
               <TableBody>
                 {students.map((student) => (
                   <StudentRow
-                    key={student.subject}
+                    key={student.user.id}
                     student={student}
                     examId={selected.id}
                     onChanged={onRefresh}
@@ -1417,7 +1428,7 @@ function UsersPage({users, onRefresh}: {users: components["schemas"]["User"][]; 
       <label className="flex items-center gap-2 rounded-md border px-3 text-sm"><input type="checkbox" checked={platformAdmin} onChange={e=>setPlatformAdmin(e.target.checked)} />平台管理员</label>
       <Button type="submit" disabled={saving}>{saving ? "添加中…" : "添加用户"}</Button>
     </form></CardContent></Card>
-    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>平台管理员是全局能力；考试管理员在每场考试单独配置；普通用户可以同时具备考试管理员或平台管理员能力。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>平台能力</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="font-medium">{user.display_name || "未命名"}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.platform_admin ? "warning" : "secondary"}>{user.platform_admin ? "平台管理员" : "普通用户"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{platform_admin:!user.platform_admin})}>{user.platform_admin ? "取消平台管理员" : "设为平台管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={6} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>平台管理员是全局能力；考试管理员在每场考试单独配置；普通用户可以同时具备考试管理员或平台管理员能力。昵称和头像来自 OIDC，用户每次登录后会同步。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>OIDC 昵称</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>平台能力</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.picture || undefined} /><AvatarFallback>{profileInitial(user)}</AvatarFallback></Avatar><div><div className="font-medium">{profileLabel(user)}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></div></div></TableCell><TableCell>{user.nickname || "—"}</TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.platform_admin ? "warning" : "secondary"}>{user.platform_admin ? "平台管理员" : "普通用户"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{platform_admin:!user.platform_admin})}>{user.platform_admin ? "取消平台管理员" : "设为平台管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={7} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
   </>;
 }
 function StudentRow({
@@ -1432,11 +1443,11 @@ function StudentRow({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const toggle = async () => {
     const result = await api.PUT("/admin/api/exams/{examId}/participants/{userId}", {
-      params: { path: { examId, userId: student.subject } },
+      params: { path: { examId, userId: student.user.id } },
       body: { enabled: !student.enabled },
     });
     if (result.error) {
-      toast.add({ title: "更新学生失败", description: student.subject, type: "error" });
+      toast.add({ title: "更新学生失败", description: student.user.id, type: "error" });
       return;
     }
     toast.add({ title: student.enabled ? "学生已禁用" : "学生已启用", type: "success" });
@@ -1444,13 +1455,13 @@ function StudentRow({
   };
   const remove = async () => {
     const result = await api.DELETE("/admin/api/exams/{examId}/participants/{userId}", {
-      params: { path: { examId, userId: student.subject } },
+      params: { path: { examId, userId: student.user.id } },
     });
     if (result.error) {
       toast.add({ title: "移除学生失败", type: "error" });
       return;
     }
-    toast.add({ title: "学生已移除", description: student.subject, type: "success" });
+    toast.add({ title: "学生已移除", description: student.user.id, type: "success" });
     onChanged();
   };
   return (
@@ -1458,16 +1469,16 @@ function StudentRow({
     <TableRow>
       <TableCell>
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-50 text-indigo-600">
-            <UserRound className="h-4 w-4" />
+          <Avatar size="sm"><AvatarImage src={student.user.picture || undefined} /><AvatarFallback>{profileInitial(student.user)}</AvatarFallback></Avatar>
+          <div>
+            <div className="font-medium">{profileLabel(student.user)}</div>
+            <div className="text-xs text-slate-500">{student.user.email || "未填写邮箱"}</div>
           </div>
-          <span className="font-medium">
-            {student.display_name || "未命名学生"}
-          </span>
         </div>
       </TableCell>
       <TableCell className="font-mono text-xs text-slate-500">
-        {student.subject}
+        <div>{student.user.nickname || "—"}</div>
+        <div>{student.user.subject || "尚未登录绑定"}</div>
       </TableCell>
       <TableCell>
         <Badge variant={student.enabled ? "success" : "secondary"}>
@@ -1495,7 +1506,7 @@ function StudentRow({
         <AlertDialogHeader>
           <AlertDialogTitle>移除学生？</AlertDialogTitle>
           <AlertDialogDescription>
-            将从当前考试名单移除 {student.subject}，之后该账号不能再参加此考试。
+            将从当前考试名单移除 {profileLabel(student.user)}，之后该账号不能再参加此考试。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -1742,6 +1753,7 @@ function ExamDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const [name, setName] = useState("");
   const [hashtag, setHashtag] = useState("");
   const [baseURL, setBaseURL] = useState("");
   const [starts, setStarts] = useState("");
@@ -1753,6 +1765,7 @@ function ExamDialog({
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (!open) return;
+    setName(exam?.name || "");
     setHashtag(exam?.hashtag || "");
     setBaseURL(exam?.base_url || "");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
@@ -1791,8 +1804,8 @@ function ExamDialog({
       require_fullscreen: requireFullscreen,
       lock_fullscreen: requireFullscreen && lockFullscreen,
     };
-    if (!hashtag.trim() || !baseURL.trim()) {
-      setFormError("考试 hashtag 和源站 URL 不能为空。");
+    if (!name.trim() || !hashtag.trim() || !baseURL.trim()) {
+      setFormError("考试名称、hashtag 和源站 URL 不能为空。");
       return;
     }
     if (!/^[A-Za-z0-9._-]{1,128}$/.test(hashtag.trim())) {
@@ -1810,6 +1823,7 @@ function ExamDialog({
     }
     setSaving(true);
     const body = {
+      name: name.trim(),
       hashtag: hashtag.trim(),
       base_url: baseURL.trim(),
       starts_at: starts ? new Date(starts).toISOString() : null,
@@ -1830,7 +1844,7 @@ function ExamDialog({
       }
       toast.add({
         title: exam ? "考试已更新" : "考试已创建",
-        description: `#${hashtag.trim()}`,
+        description: `${name.trim()} · #${hashtag.trim()}`,
         type: "success",
       });
       onSaved();
@@ -1854,6 +1868,18 @@ function ExamDialog({
         onSubmit={(event) => void submit(event)}
       >
         <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="exam-name">考试名称</Label>
+            <Input
+              id="exam-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="2026 春季学期计算机基础期末考试"
+            />
+            <p className="text-xs text-slate-500">
+              面向管理员和学生显示的正式名称；hashtag 仍用于短标签和兼容链接。
+            </p>
+          </div>
           <div className="space-y-2">
             <Label htmlFor="exam-hashtag">考试 hashtag</Label>
             <Input
@@ -2018,7 +2044,7 @@ function StudentDialog({
             placeholder="选择全局用户（按邮箱）"
             options={users.map((user) => ({
               value: user.id,
-              label: `${user.email || user.display_name || "未命名"}${user.subject ? "" : "（尚未登录）"}`,
+              label: `${profileLabel(user)}${user.subject ? "" : "（尚未登录）"}`,
             }))}
           />
           <p className="text-xs text-slate-500">

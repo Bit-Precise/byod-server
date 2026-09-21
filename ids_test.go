@@ -25,3 +25,16 @@ func TestExamHashtagValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestExamNameValidation(t *testing.T) {
+	for _, value := range []string{"期末考试", "Computer Science 101 Final"} {
+		if !validExamName(value) {
+			t.Errorf("exam name %q should be accepted", value)
+		}
+	}
+	for _, value := range []string{"", "   "} {
+		if validExamName(value) {
+			t.Errorf("exam name %q should be rejected", value)
+		}
+	}
+}

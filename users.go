@@ -14,7 +14,7 @@ import (
 const userSchema = `
 CREATE TABLE IF NOT EXISTS byod_users(
  id TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT,
- email TEXT, display_name TEXT NOT NULL DEFAULT '',
+ email TEXT, display_name TEXT NOT NULL DEFAULT '', nickname TEXT NOT NULL DEFAULT '', picture TEXT NOT NULL DEFAULT '',
  role TEXT NOT NULL DEFAULT 'student' CHECK(role IN ('student','admin')),
  platform_admin BOOLEAN NOT NULL DEFAULT false,
  enabled BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS byod_user_audit(
  action TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', occurred_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS byod_user_audit_time_idx ON byod_user_audit(occurred_at DESC);
 ALTER TABLE byod_users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE byod_users ADD COLUMN IF NOT EXISTS nickname TEXT NOT NULL DEFAULT '';
+ALTER TABLE byod_users ADD COLUMN IF NOT EXISTS picture TEXT NOT NULL DEFAULT '';
 UPDATE byod_users SET platform_admin=true WHERE role='admin' AND NOT platform_admin;
 INSERT INTO byod_schema_migrations(version) VALUES(2) ON CONFLICT DO NOTHING;
 `
@@ -49,6 +51,8 @@ type User struct {
 	Subject     *string `json:"subject"`
 	Email       *string `json:"email"`
 	DisplayName string  `json:"display_name"`
+	Nickname    string  `json:"nickname"`
+	Picture     string  `json:"picture"`
 	// Role is retained as a compatibility projection. Authorization uses
 	// PlatformAdmin and exam-admin memberships; users may have both.
 	Role          string     `json:"role"`
@@ -79,12 +83,12 @@ var ErrIdentityConflict = errors.New("identity_conflict")
 var ErrUserDisabled = errors.New("user_disabled")
 var ErrLastAdmin = errors.New("last_platform_admin_required")
 
-const userColumns = `id,issuer,subject,email,display_name,role,platform_admin,enabled,created_at,last_login_at`
+const userColumns = `id,issuer,subject,email,display_name,nickname,picture,role,platform_admin,enabled,created_at,last_login_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanUser(row scanner) (u User, err error) {
-	err = row.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt)
+	err = row.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Nickname, &u.Picture, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt)
 	if err == nil {
 		// Keep the legacy projection useful for older clients, but do not use it
 		// as an authorization source.
@@ -148,7 +152,7 @@ func (s *PostgresStore) ResolveIdentity(ctx context.Context, identity OIDCIdenti
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		platformAdmin := email != "" && s.AdminEmails[email]
-		u, err = scanUser(tx.QueryRowContext(ctx, `INSERT INTO byod_users(id,issuer,subject,email,display_name,platform_admin) VALUES($1,$2,$3,NULLIF($4,''),$5,$6) RETURNING `+userColumns, randomToken(18), identity.Issuer, identity.Subject, email, identity.Name, platformAdmin))
+		u, err = scanUser(tx.QueryRowContext(ctx, `INSERT INTO byod_users(id,issuer,subject,email,display_name,nickname,picture,platform_admin) VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8) RETURNING `+userColumns, randomToken(18), identity.Issuer, identity.Subject, email, identity.Name, identity.Nickname, identity.Picture, platformAdmin))
 		if err != nil {
 			return User{}, err
 		}
@@ -181,7 +185,7 @@ func (s *PostgresStore) ResolveIdentity(ctx context.Context, identity OIDCIdenti
 	}
 	// An existing subject is authoritative. Never merge accounts or move privileges
 	// just because an IdP later changes its email claim.
-	u, err = scanUser(tx.QueryRowContext(ctx, `UPDATE byod_users SET last_login_at=now(),display_name=CASE WHEN display_name='' THEN $2 ELSE display_name END WHERE id=$1 RETURNING `+userColumns, u.ID, identity.Name))
+	u, err = scanUser(tx.QueryRowContext(ctx, `UPDATE byod_users SET last_login_at=now(),display_name=CASE WHEN display_name='' THEN $2 ELSE display_name END,nickname=CASE WHEN $3<>'' THEN $3 ELSE nickname END,picture=CASE WHEN $4<>'' THEN $4 ELSE picture END WHERE id=$1 RETURNING `+userColumns, u.ID, identity.Name, identity.Nickname, identity.Picture))
 	if err != nil {
 		return User{}, err
 	}
@@ -228,7 +232,7 @@ func (s *PostgresStore) InviteUser(ctx context.Context, issuer, email, name stri
 	return u, tx.Commit()
 }
 func (s *PostgresStore) ListUsers(ctx context.Context, issuer, query string, limit, offset int) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM byod_users WHERE issuer=$1 AND ($2='' OR strpos(lower(coalesce(email,'')||' '||display_name||' '||coalesce(subject,'')),lower($2))>0) ORDER BY created_at,id LIMIT $3 OFFSET $4`, issuer, query, limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM byod_users WHERE issuer=$1 AND ($2='' OR strpos(lower(coalesce(email,'')||' '||display_name||' '||nickname||' '||coalesce(subject,'')),lower($2))>0) ORDER BY created_at,id LIMIT $3 OFFSET $4`, issuer, query, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +343,7 @@ func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Pa
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY u.display_name,u.id`, key)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.nickname,u.picture,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY COALESCE(NULLIF(u.nickname,''),NULLIF(u.display_name,''),u.id),u.id`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +352,7 @@ func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Pa
 	for rows.Next() {
 		var p Participant
 		u := &p.User
-		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &p.Enabled); err != nil {
+		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Nickname, &u.Picture, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &p.Enabled); err != nil {
 			return nil, err
 		}
 		if u.PlatformAdmin {
@@ -366,7 +370,7 @@ func (s *PostgresStore) ListExamAdmins(ctx context.Context, exam string) ([]Exam
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,a.enabled,a.created_at FROM byod_exam_admins a JOIN byod_users u ON u.id=a.user_id WHERE a.exam_id=$1 ORDER BY u.display_name,u.id`, key)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.nickname,u.picture,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,a.enabled,a.created_at FROM byod_exam_admins a JOIN byod_users u ON u.id=a.user_id WHERE a.exam_id=$1 ORDER BY COALESCE(NULLIF(u.nickname,''),NULLIF(u.display_name,''),u.id),u.id`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +379,7 @@ func (s *PostgresStore) ListExamAdmins(ctx context.Context, exam string) ([]Exam
 	for rows.Next() {
 		var a ExamAdmin
 		u := &a.User
-		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &a.Enabled, &a.CreatedAt); err != nil {
+		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Nickname, &u.Picture, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &a.Enabled, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		if u.PlatformAdmin {
@@ -424,7 +428,7 @@ func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]
 	if err := s.advanceExamStates(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.hashtag,btrim(e.exam_code),e.base_url,e.state,e.starts_at,e.ends_at,e.policy_json,e.updated_at::text FROM byod_exams e WHERE EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$1 AND u.platform_admin) OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=e.exam_id AND a.user_id=$1 AND a.enabled) ORDER BY e.hashtag`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.name,e.hashtag,btrim(e.exam_code),e.base_url,e.state,e.starts_at,e.ends_at,e.policy_json,e.updated_at::text FROM byod_exams e WHERE EXISTS(SELECT 1 FROM byod_users u WHERE u.id=$1 AND u.platform_admin) OR EXISTS(SELECT 1 FROM byod_exam_admins a WHERE a.exam_id=e.exam_id AND a.user_id=$1 AND a.enabled) ORDER BY e.name,e.hashtag`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +437,7 @@ func (s *PostgresStore) ListExamsForUser(ctx context.Context, userID string) ([]
 	for rows.Next() {
 		var x StoredExam
 		var p []byte
-		if err := rows.Scan(&x.ID, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Hashtag, &x.ExamCode, &x.BaseURL, &x.State, &x.StartsAt, &x.EndsAt, &p, &x.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(p, &x.Policy)
@@ -446,7 +450,7 @@ func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID st
 	if err := s.advanceExamStates(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.hashtag,e.base_url,e.state,e.starts_at,e.ends_at,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=e.exam_id AND c.subject=COALESCE(u.subject,'')) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id JOIN byod_exams e ON e.exam_id=p.exam_id WHERE p.user_id=$1 AND p.enabled AND u.enabled ORDER BY COALESCE(e.starts_at,e.updated_at),e.hashtag`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id::text,e.name,e.hashtag,e.base_url,e.state,e.starts_at,e.ends_at,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=e.exam_id AND c.subject=COALESCE(u.subject,'')) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id JOIN byod_exams e ON e.exam_id=p.exam_id WHERE p.user_id=$1 AND p.enabled AND u.enabled ORDER BY COALESCE(e.starts_at,e.updated_at),e.name,e.hashtag`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +458,7 @@ func (s *PostgresStore) ListAvailableExamsForUser(ctx context.Context, userID st
 	var out []AvailableExam
 	for rows.Next() {
 		var exam AvailableExam
-		if err := rows.Scan(&exam.ID, &exam.Hashtag, &exam.BaseURL, &exam.State, &exam.StartsAt, &exam.EndsAt, &exam.Completed); err != nil {
+		if err := rows.Scan(&exam.ID, &exam.Name, &exam.Hashtag, &exam.BaseURL, &exam.State, &exam.StartsAt, &exam.EndsAt, &exam.Completed); err != nil {
 			return nil, err
 		}
 		out = append(out, exam)

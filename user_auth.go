@@ -66,7 +66,7 @@ func (s *Service) currentUser(r *http.Request) (User, string, error) {
 	if s.ExamStore == nil {
 		return User{}, "", errors.New("database_required")
 	}
-	u, err := scanUser(s.ExamStore.db.QueryRowContext(r.Context(), `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at FROM byod_user_sessions s JOIN byod_users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.enabled AND u.issuer=$2`, digestToken(cookie.Value), s.identityIssuer()))
+	u, err := scanUser(s.ExamStore.db.QueryRowContext(r.Context(), `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.nickname,u.picture,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at FROM byod_user_sessions s JOIN byod_users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.enabled AND u.issuer=$2`, digestToken(cookie.Value), s.identityIssuer()))
 	return u, cookie.Value, err
 }
 func (s *Service) validCSRF(r *http.Request, token string) bool {

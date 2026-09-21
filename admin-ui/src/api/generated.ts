@@ -569,6 +569,8 @@ export interface components {
              * @description Internal immutable primary key
              */
             readonly id: string;
+            /** @description Human-readable exam name */
+            name: string;
             /** @description User-defined exam label */
             hashtag: string;
             /** Format: uri */
@@ -584,6 +586,8 @@ export interface components {
             };
         };
         ExamInput: {
+            /** @description Human-readable exam name */
+            name: string;
             /** @description User-defined exam label */
             hashtag: string;
             /** Format: uri */
@@ -599,6 +603,7 @@ export interface components {
         AvailableExam: {
             /** Format: uuid */
             id: string;
+            name: string;
             hashtag: string;
             /** Format: uri */
             base_url: string;
@@ -656,6 +661,10 @@ export interface components {
             /** Format: email */
             email?: string | null;
             display_name: string;
+            /** @description OIDC nickname claim */
+            nickname: string;
+            /** @description OIDC picture claim */
+            picture: string;
             /**
              * @deprecated
              * @description Compatibility projection; use platform_admin and exam-admin memberships.

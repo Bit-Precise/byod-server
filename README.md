@@ -32,7 +32,7 @@ cookie。
 生产启动还必须设置非空的 `BYOD_POLICY_SECRET`；只有显式启用 `--dev-auth` 时才
 会使用开发密钥。
 
-生产环境的每场考试通过管理后台写入 PostgreSQL。每场考试由服务端生成不可变的 UUID 主键 `id`；管理员填写的 `hashtag` 只是用户可见、可修改的考试标签，不参与内部关联。`base_url` 是考试开始后要打开的完整 HTTPS 页面 URL，例如 `https://cs101.gbu.edu.cn/paper/category/exam`；透明 tunnel 只使用它的 host/port 拨号，路径和查询参数由浏览器打开页面时使用，不做 TLS termination。`--upstream` 仅作为没有数据库记录时的本地开发回退值。
+生产环境的每场考试通过管理后台写入 PostgreSQL。每场考试由服务端生成不可变的 UUID 主键 `id`；管理员填写独立的考试名称 `name` 和用户标签 `hashtag`，后者可修改且不参与内部关联。`base_url` 是考试开始后要打开的完整 HTTPS 页面 URL，例如 `https://cs101.gbu.edu.cn/paper/category/exam`；透明 tunnel 只使用它的 host/port 拨号，路径和查询参数由浏览器打开页面时使用，不做 TLS termination。`--upstream` 仅作为没有数据库记录时的本地开发回退值。
 
 考试状态由后端状态机维护：新建为 `draft`，发布时按开始时间进入 `scheduled` 或 `active`，到达开始/结束时间后由服务端自动推进为 `active`/`ended`。管理端不能直接写入 `state`。
 
@@ -56,7 +56,7 @@ helm upgrade --install byod helm/byod-server \
 ```
 
 访问 `/admin/` 打开控制中心，所有身份均使用 Connect OIDC 登录。权限不是互斥角色：平台管理员由 `platform_admin` 能力授予，可管理全局用户和所有考试；考试管理员通过 `byod_exam_admins` 单独绑定到某场考试，只能管理该考试；普通用户是全局用户目录中的基础身份，也可以同时拥有上述任一能力和考试参加资格。首次部署通过 `BYOD_ADMIN_EMAILS`（Helm 的 `adminEmails`）指定可自动成为平台管理员的已验证邮箱。
-后台提供考试、全局用户、考试管理员、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把用户加入考试名单或授予某场考试的管理员能力；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。
+后台提供考试、全局用户、考试管理员、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把用户加入考试名单或授予某场考试的管理员能力；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。用户首次 OIDC 登录后会保存 `nickname` 和 `picture` claim，并在用户目录、考试名单和管理员列表中展示。
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
@@ -143,7 +143,7 @@ Web 页面来源不会被允许调用会话接口。
 ## 联调流程
 
 1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
-2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试（使用 UUID `id` 作为内部引用，使用 `hashtag` 展示）；学生不再输入考试码。
+2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试（使用 UUID `id` 作为内部引用，同时展示考试名称和 `hashtag`）；学生不再输入考试码。
 3. 学生选择考试后，浏览器用 UUID `exam_id` 调用 `POST /v1/sessions` 创建已认证的作答 session。
 4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_url` 页面所在 origin 的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
 5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

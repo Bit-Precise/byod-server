@@ -7,6 +7,7 @@ export {};
 type ExamConfig = {
   exam: {
     id: string;
+    name?: string;
     hashtag?: string;
     origin: string;
     source_url?: string;
@@ -40,6 +41,7 @@ type ExamConfig = {
 
 type AvailableExam = {
   id: string;
+  name: string;
   hashtag: string;
   base_url: string;
   state: string;
@@ -309,6 +311,11 @@ function formatTime(value?: string | null): string {
   return Number.isNaN(date.getTime()) ? 'not set' : date.toLocaleString();
 }
 
+function examName(config: ExamConfig): string {
+  const name = config.exam.name?.trim();
+  return name || `#${config.exam.hashtag || config.exam.id}`;
+}
+
 function updateCountdown(deadline: string | null | undefined, prefix: string) {
   if (!deadline) {
     countdownElement.textContent = '';
@@ -361,7 +368,7 @@ async function reportViolation(examOrigin: string, sessionId: string,
 }
 
 function showWaiting(target: URL, config: ExamConfig, sessionID: string) {
-  title.textContent = 'Exam session authenticated';
+	title.textContent = examName(config);
   message.textContent = 'Identity verified. The exam will unlock at the scheduled start time.';
   targetElement.textContent = target.href;
   targetSection.hidden = false;
@@ -383,7 +390,7 @@ function showWaiting(target: URL, config: ExamConfig, sessionID: string) {
 
 function showConfirm(target: URL, config: ExamConfig, sessionID: string) {
   clearTimers();
-  title.textContent = 'Ready to enter the exam';
+	title.textContent = examName(config);
   message.textContent = 'The exam is open. Confirm to start your attempt and enter the exam.';
   targetElement.textContent = target.href;
   targetSection.hidden = false;
@@ -402,7 +409,7 @@ function showConfirm(target: URL, config: ExamConfig, sessionID: string) {
 
 function showReady(target: URL, config: ExamConfig, sessionID: string) {
   clearTimers();
-  title.textContent = 'Exam in progress';
+	title.textContent = examName(config);
   message.textContent = 'The signed exam policy is active. Submit when you finish.';
   targetElement.textContent = target.href;
   targetSection.hidden = false;
@@ -631,9 +638,9 @@ function showExamChoices(exams: AvailableExam[]) {
     button.className = 'exam-choice';
     button.disabled = exam.completed || exam.state === 'ended';
     const titleNode = document.createElement('strong');
-    titleNode.textContent = `#${exam.hashtag}`;
+    titleNode.textContent = exam.name;
     const detail = document.createElement('small');
-    detail.textContent = `${examLabel(exam)} · starts ${formatTime(exam.starts_at)} · ends ${formatTime(exam.ends_at)}`;
+    detail.textContent = `#${exam.hashtag} · ${examLabel(exam)} · starts ${formatTime(exam.starts_at)} · ends ${formatTime(exam.ends_at)}`;
     button.append(titleNode, detail);
     button.onclick = () => void selectExam(exam);
     examList.append(button);
