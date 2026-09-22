@@ -21,6 +21,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "listen address")
 	tunnelListen := flag.String("tunnel-listen", "127.0.0.1:8788", "raw BYOD tunnel listen address; empty disables the data plane")
 	tunnelEndpoint := flag.String("tunnel-endpoint", os.Getenv("BYOD_TUNNEL_ENDPOINT"), "public BYOD tunnel host:port advertised to browsers")
+	tunnelPrivateEndpoint := flag.String("tunnel-private-endpoint", os.Getenv("BYOD_TUNNEL_PRIVATE_ENDPOINT"), "private BYOD tunnel host:port for configured client networks")
+	tunnelPrivateCIDRs := flag.String("tunnel-private-cidrs", os.Getenv("BYOD_TUNNEL_PRIVATE_CIDRS"), "comma-separated client CIDRs that receive the private tunnel endpoint")
 	origin := flag.String("exam-origin", "https://exam.cs.ac.cn", "public exam origin")
 	upstream := flag.String("upstream", "http://127.0.0.1:9000", "fixed exam upstream")
 	databaseURL := flag.String("database-url", os.Getenv("BYOD_DATABASE_URL"), "PostgreSQL connection URL for exam metadata")
@@ -61,6 +63,12 @@ func main() {
 	if *tunnelEndpoint != "" {
 		service.TunnelEndpoint = *tunnelEndpoint
 	}
+	service.TunnelPrivateEndpoint = strings.TrimSpace(*tunnelPrivateEndpoint)
+	privateCIDRs, cidrErr := server.ParseTunnelCIDRs(*tunnelPrivateCIDRs)
+	if cidrErr != nil {
+		log.Fatal(cidrErr)
+	}
+	service.TunnelPrivateCIDRs = privateCIDRs
 	service.AdminToken = *adminToken
 	for _, email := range strings.Split(*adminEmails, ",") {
 		if normalized, err := server.NormalizeEmailForConfig(email); err == nil {

@@ -11,6 +11,11 @@ tunnel:
   # Public host:port advertised to BYOD Browser. It must resolve to a raw TCP
   # listener; the HTTP Ingress below cannot carry this traffic.
   endpoint: ""
+  # Optional endpoint for clients in privateCIDRs. If unset, endpoint is used
+  # for every client.
+  privateEndpoint: ""
+  # Comma-separated client CIDRs that should receive privateEndpoint.
+  privateCIDRs: ""
   service:
     enabled: false
     type: LoadBalancer

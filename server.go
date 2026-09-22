@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -113,6 +114,11 @@ type Service struct {
 	// TunnelEndpoint is the public host:port exposed by an L4 load balancer.
 	// It is intentionally separate from the HTTP control-plane origin.
 	TunnelEndpoint string
+	// TunnelPrivateEndpoint is an optional endpoint for clients in the
+	// configured private address ranges. The browser still receives one
+	// endpoint, selected when it fetches the exam configuration.
+	TunnelPrivateEndpoint string
+	TunnelPrivateCIDRs    []*net.IPNet
 	// ExamUpstreams optionally overrides the default upstream per exam ID. The
 	// map is operator-provided configuration, never taken from a browser
 	// request, so exam routing cannot be turned into an open proxy.
@@ -417,6 +423,10 @@ func (s *Service) pathAllowed(examID, requestPath string) bool {
 }
 
 func (s *Service) configuration(examID string) map[string]any {
+	return s.configurationForRequest(examID, nil)
+}
+
+func (s *Service) configurationForRequest(examID string, request *http.Request) map[string]any {
 	authorizeEndpoint := s.OIDCAuthorize
 	clientID := "byod-browser"
 	if s.DevAuth {
@@ -442,7 +452,7 @@ func (s *Service) configuration(examID string) map[string]any {
 	return map[string]any{"version": 1,
 		"exam": exam,
 		"tunnel": map[string]any{"protocol": "byod-tunnel-v1", "endpoint_id": examID,
-			"endpoint":    s.TunnelEndpoint,
+			"endpoint":    s.tunnelEndpointForRequest(request),
 			"ticket_path": "/v1/sessions/{session_id}/tunnel-ticket"},
 		"oidc": map[string]any{"authorization_endpoint": authorizeEndpoint,
 			"callback_endpoint": "/oidc/callback", "client_id": clientID,
@@ -836,7 +846,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 				s.writeExamError(w, err)
 				return
 			}
-			s.writeJSON(w, http.StatusOK, s.configuration(examID))
+			s.writeJSON(w, http.StatusOK, s.configurationForRequest(examID, r))
 			return
 		}
 	}

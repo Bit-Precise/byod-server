@@ -64,6 +64,11 @@ helm upgrade --install byod helm/byod-server \
 LoadBalancer/NodePort，不做 TLS termination。若集群使用 Gateway API，请关闭该
 Service 并用 TCPRoute 暴露同一个 targetPort。
 
+如果数据中心客户端不能访问公网 DNAT，可同时设置
+`tunnel.privateEndpoint` 和逗号分隔的 `tunnel.privateCIDRs`。服务端会根据
+`X-Forwarded-For` 的客户端地址，为匹配 CIDR 的配置请求下发内网 endpoint，其他
+客户端继续收到 `tunnel.endpoint`；浏览器协议不需要改变。
+
 ## GitHub Actions / GHCR
 
 `release.yml` 会在 `v*` tag 上运行镜像构建和 Helm chart 发布；`ci.yml` 会在每次提交时重新生成并校验 Go/TypeScript 客户端：

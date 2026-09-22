@@ -51,6 +51,12 @@ spec:
             {{- if .Values.tunnel.endpoint }}
             - --tunnel-endpoint={{ .Values.tunnel.endpoint }}
             {{- end }}
+            {{- if .Values.tunnel.privateEndpoint }}
+            - --tunnel-private-endpoint={{ .Values.tunnel.privateEndpoint }}
+            {{- end }}
+            {{- if .Values.tunnel.privateCIDRs }}
+            - --tunnel-private-cidrs={{ .Values.tunnel.privateCIDRs }}
+            {{- end }}
             - --exam-origin={{ .Values.examOrigin }}
             - --upstream={{ .Values.upstream }}
             - --policy-file={{ .Values.policyFile }}
