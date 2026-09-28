@@ -629,7 +629,6 @@ function App() {
       <StudentDialog
         open={studentDialogOpen}
         exam={selectedExam}
-        users={users}
         onClose={() =>
           selectedExam
             ? navigate({ section: "students", examId: selectedExam.id })
@@ -1348,10 +1347,10 @@ function StudentsPage({
                 {!examAdmins.length && <span className="text-xs text-slate-400">尚未配置考试管理员</span>}
               </div>
               <div className="mb-5 flex max-w-xl gap-2">
-                <SelectField
+                <UserPicker
                   value=""
                   placeholder="选择全局用户并授予考试管理员"
-                  options={users.filter((user) => !examAdmins.some((admin) => admin.user.id === user.id)).map((user) => ({ value: user.id, label: user.email || user.display_name || user.id }))}
+                  excludeIds={examAdmins.map((admin) => admin.user.id)}
                   onValueChange={(userId) => void (async () => {
                     if (!userId) return;
                     const result = await api.PUT("/admin/api/exams/{examId}/admins/{userId}", { params: { path: { examId: selected.id, userId } }, body: { enabled: true } });
@@ -2069,13 +2068,11 @@ function ExamDialog({
 function StudentDialog({
   open,
   exam,
-  users,
   onClose,
   onSaved,
 }: {
   open: boolean;
   exam: Exam | null;
-  users: components["schemas"]["User"][];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -2115,17 +2112,14 @@ function StudentDialog({
       <form className="space-y-4" onSubmit={(event) => void submit(event)}>
         <div className="space-y-2">
           <Label htmlFor="student-subject">全局用户 ID</Label>
-          <SelectField
+          <UserPicker
+            enabled={open}
             value={subject}
             onValueChange={setSubject}
             placeholder="选择全局用户（按邮箱）"
-            options={users.map((user) => ({
-              value: user.id,
-              label: `${profileLabel(user)}${user.subject ? "" : "（尚未登录）"}`,
-            }))}
           />
           <p className="text-xs text-slate-500">
-            先在“用户管理”按邮箱添加用户，再把用户 ID 加入考试名单。
+            可按邮箱、昵称或 subject 搜索；先在“用户管理”按邮箱添加用户，再把用户 ID 加入考试名单。
           </p>
         </div>
         <div className="space-y-2">
@@ -2149,6 +2143,94 @@ function StudentDialog({
     </AppDialog>
   );
 }
+
+function UserPicker({
+  value,
+  onValueChange,
+  placeholder,
+  excludeIds = [],
+  enabled = true,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  placeholder: string;
+  excludeIds?: string[];
+  enabled?: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [users, setUsers] = useState<components["schemas"]["User"][]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void api.GET("/admin/api/users", {
+        params: {
+          query: {
+            q: query.trim() || undefined,
+            page,
+            page_size: USERS_PAGE_SIZE,
+          },
+        },
+        signal: controller.signal,
+      }).then((result) => {
+        if (controller.signal.aborted) return;
+        if (!result.error) {
+          setUsers((result.data || []) as components["schemas"]["User"][]);
+          setTotal(Number(result.response.headers.get("X-Total-Count") || 0));
+        }
+      }).finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [enabled, page, query]);
+
+  const availableUsers = users.filter((user) => !excludeIds.includes(user.id));
+  const hasPrevious = page > 1;
+  const hasNext = page * USERS_PAGE_SIZE < total;
+  return (
+    <div className="w-full space-y-2">
+      <Input
+        value={query}
+        placeholder="搜索邮箱、昵称或 subject"
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setPage(1);
+          onValueChange("");
+        }}
+      />
+      <SelectField
+        value={value}
+        onValueChange={onValueChange}
+        placeholder={loading ? "加载用户…" : placeholder}
+        options={availableUsers.map((user) => ({
+          value: user.id,
+          label: `${profileLabel(user)}${user.subject ? "" : "（尚未登录）"}`,
+        }))}
+      />
+      <div className="flex items-center justify-between text-xs text-slate-500">
+        <span>{total ? `共 ${total} 个匹配用户 · 第 ${page} 页` : (loading ? "正在搜索…" : "没有匹配用户")}</span>
+        <span className="flex items-center gap-1">
+          <Button type="button" variant="ghost" size="xs" disabled={!hasPrevious || loading} onClick={() => setPage((current) => current - 1)}>
+            <ChevronLeft />上一页
+          </Button>
+          <Button type="button" variant="ghost" size="xs" disabled={!hasNext || loading} onClick={() => setPage((current) => current + 1)}>
+            下一页<ChevronRight />
+          </Button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function SessionDialog({
   session,
   events,
