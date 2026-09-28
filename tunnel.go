@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,9 @@ type tunnelTicket struct {
 // stream. Ticket is opaque to clients; EndpointID is checked against the
 // server-side session binding and is never used as a dial target by itself.
 type TunnelAuth struct {
+	// Target is the CONNECT authority, validated against the exam's current
+	// tunnel_hosts after authentication. Binary v1 leaves this empty.
+	Target     string
 	Ticket     string
 	EndpointID string
 	Nonce      []byte
@@ -259,8 +263,8 @@ func (s *Service) revokeTunnelTicketsLocked(sessionID string) {
 }
 
 // readConnectTunnelAuth parses a bounded HTTP CONNECT request. The request
-// target is deliberately ignored: the endpoint is selected by the signed
-// session credential, never by an arbitrary host supplied by the browser.
+// target is checked against the signed per-exam tunnel_hosts list after the
+// session credential is authenticated; it is never used without that check.
 // This lets Chromium use its normal HTTPS proxy socket while preserving the
 // opaque source-site TLS stream after the 200 response.
 func readConnectTunnelAuth(r *bufio.Reader) (*TunnelAuth, error) {
@@ -316,7 +320,40 @@ func readConnectTunnelAuth(r *bufio.Reader) (*TunnelAuth, error) {
 	if err != nil || len(proof) != tunnelProofSize {
 		return nil, errTunnelMalformed
 	}
-	return &TunnelAuth{Ticket: ticket, EndpointID: endpointID, Nonce: nonce, Proof: proof}, nil
+	return &TunnelAuth{Target: requestLine[1], Ticket: ticket, EndpointID: endpointID, Nonce: nonce, Proof: proof}, nil
+}
+
+// tunnelAddress never accepts an arbitrary CONNECT destination: only the
+// authenticated exam's explicit hosts may be dialed. For binary v1 (no target),
+// Base URL is usable only if its host is explicitly allowlisted as well.
+func (s *Service) tunnelAddress(ctx context.Context, examID, target string) (string, error) {
+	if target == "" {
+		upstream, err := s.upstreamForExam(ctx, examID)
+		if err != nil {
+			return "", err
+		}
+		target, err = parseTunnelUpstream(upstream)
+		if err != nil {
+			return "", err
+		}
+	}
+	host, port, err := net.SplitHostPort(target)
+	host = strings.ToLower(host)
+	p, portErr := strconv.Atoi(port)
+	if err != nil || !validTunnelHost(host) || portErr != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
+		return "", errTunnelDenied
+	}
+	document := s.policy(examID)["document"].(map[string]any)
+	hosts, err := parseTunnelHosts(document["tunnel_hosts"])
+	if err != nil {
+		return "", errTunnelDenied
+	}
+	for _, allowed := range hosts {
+		if host == allowed {
+			return net.JoinHostPort(host, port), nil
+		}
+	}
+	return "", errTunnelDenied
 }
 
 // ServeTunnel handles one authenticated raw TCP stream. The stream after the
@@ -340,10 +377,11 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 	connectMode := bytes.HasPrefix(peek, []byte("CONNECT "))
 	var auth *TunnelAuth
 	var err error
+	clientReader := bufio.NewReader(io.MultiReader(bytes.NewReader(peek), conn))
 	if connectMode {
-		auth, err = readConnectTunnelAuth(bufio.NewReader(io.MultiReader(bytes.NewReader(peek), conn)))
+		auth, err = readConnectTunnelAuth(clientReader)
 	} else {
-		auth, err = readTunnelAuth(io.MultiReader(bytes.NewReader(peek), conn))
+		auth, err = readTunnelAuth(clientReader)
 	}
 	if err != nil {
 		slog.Warn("tunnel_handshake_failed", "remote", remote, "connect_mode", connectMode, "error", err.Error())
@@ -364,14 +402,13 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 		}
 		return
 	}
-	upstream, err := s.upstreamForExam(ctx, info.ExamID)
-	address, addressErr := parseTunnelUpstream(upstream)
-	if err != nil || addressErr != nil {
-		slog.Error("tunnel_upstream_invalid", "remote", remote, "exam_id", info.ExamID, "error", firstTunnelError(err, addressErr))
+	address, err := s.tunnelAddress(ctx, info.ExamID, auth.Target)
+	if err != nil {
+		slog.Warn("tunnel_destination_denied", "remote", remote, "exam_id", info.ExamID, "error", err.Error())
 		if connectMode {
-			_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+			_, _ = io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
 		} else {
-			_ = writeTunnelAck(conn, 3)
+			_ = writeTunnelAck(conn, 2)
 		}
 		return
 	}
@@ -425,7 +462,7 @@ func (s *Service) ServeTunnel(ctx context.Context, conn net.Conn) {
 
 	copyDone := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(upstreamConn, conn)
+		_, _ = io.Copy(upstreamConn, clientReader)
 		closeBoth()
 		copyDone <- struct{}{}
 	}()

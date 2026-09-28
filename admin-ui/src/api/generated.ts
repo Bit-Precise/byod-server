@@ -228,6 +228,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/api/exams/{examId}/participants/{userId}/reset-completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resetExamCompletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/api/exams/{examId}/admins": {
         parameters: {
             query?: never;
@@ -708,6 +727,13 @@ export interface components {
         Participant: {
             user: components["schemas"]["User"];
             enabled: boolean;
+            /** @description Whether this user's one-time completion claim exists */
+            completed: boolean;
+        };
+        CompletionReset: {
+            exam_id: string;
+            user_id: string;
+            reset: boolean;
         };
         ParticipantInput: {
             enabled?: boolean;
@@ -1068,7 +1094,13 @@ export interface operations {
         parameters: {
             query?: {
                 q?: string;
+                /** @description 1-based page number (default 1) */
+                page?: number;
+                /** @description Items per page (default 50, maximum 100) */
+                page_size?: number;
+                /** @description Legacy alias for page_size */
                 limit?: number;
+                /** @description Legacy zero-based item offset */
                 offset?: number;
             };
             header?: never;
@@ -1077,9 +1109,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Users */
+            /** @description Users page; the JSON body remains an array for compatibility */
             200: {
                 headers: {
+                    "X-Total-Count"?: number;
+                    "X-Page"?: number;
+                    "X-Page-Size"?: number;
+                    "X-Has-More"?: boolean;
                     [name: string]: unknown;
                 };
                 content: {
@@ -1221,6 +1257,36 @@ export interface operations {
         responses: {
             /** @description Removed */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resetExamCompletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                examId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Completion reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletionReset"];
+                };
+            };
+            /** @description User or exam not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

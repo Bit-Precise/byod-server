@@ -40,6 +40,11 @@ cookie。
 [`policy.example.json`](policy.example.json)。中台会强制覆盖 `exam_id` 和
 `allowed_origins`，并对最终文档重新签名。
 
+透明 tunnel 的目标由签名策略中的 `tunnel_hosts` 显式控制：它是只包含精确域名的
+数组，例如 `["cs101.gbu.edu.cn", "minio.cs101.gbu.edu.cn"]`。只有列表中的 HTTPS
+host 会走 tunnel；列表为空时所有请求都不走 tunnel，Base URL 不会自动加入。
+不要把 `allowed_origins` 当作 tunnel 配置，它只控制考试期间允许的顶层导航。
+
 ## Helm 部署
 
 ```bash
@@ -131,9 +136,10 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | GET | `/admin/api/sessions` 或 `/admin/api/exams/{id}/sessions` | 查看在线作答 session |
 | GET/POST | `/admin/api/sessions/{id}` | 查看或暂停/恢复 session |
 | GET | `/admin/api/events` | 查询全局审计事件 |
-| GET/POST | `/admin/api/users` | 按邮箱查询/预先建立全局用户 |
+| GET/POST | `/admin/api/users` | 按邮箱查询/预先建立全局用户；GET 支持 `page`（从 1 开始）和 `page_size`（默认 50，最大 100），例如 `?page=2&page_size=50`；响应数组保持兼容，并通过 `X-Total-Count`、`X-Page`、`X-Page-Size`、`X-Has-More` 返回分页信息。旧客户端也可继续使用 `limit`/`offset` |
 | GET/PATCH | `/admin/api/users/{user_id}` | 查看、启停用户和调整 `platform_admin` 能力 |
 | GET/PUT/DELETE | `/admin/api/exams/{id}/participants/{user_id}` | 从全局用户目录配置考试参加资格 |
+| POST | `/admin/api/exams/{id}/participants/{user_id}/reset-completion` | 撤销误交卷记录；保留原 session/审计记录，学生下次进入会创建新 session |
 | GET | `/admin/api/exams/{id}/admins` | 查看该考试管理员 |
 | PUT/DELETE | `/admin/api/exams/{id}/admins/{user_id}` | 授予/撤销该考试管理员能力（平台管理员） |
 | GET | `/admin/api/user-audit` | 查询用户和权限审计日志 |
@@ -150,5 +156,5 @@ Web 页面来源不会被允许调用会话接口。
 1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
 2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试（使用 UUID `id` 作为内部引用，同时展示考试名称和 `hashtag`）；学生不再输入考试码。
 3. 学生选择考试后，浏览器用 UUID `exam_id` 调用 `POST /v1/sessions` 创建已认证的作答 session。
-4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `source_url` 页面所在 origin 的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
+4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `tunnel_hosts` 列出的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
 5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

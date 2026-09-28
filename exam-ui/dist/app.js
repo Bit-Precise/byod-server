@@ -140,6 +140,7 @@ async function activateTunnel(config, sessionID, token) {
     const endpoint = endpointAddress(config);
     if (!sendNativeMessage('setByodTunnelConfig', [{
             sourceHost: config.exam.source_host || sourceOrigin(config).hostname,
+            tunnelHosts: config.policy.document?.tunnel_hosts || [],
             proxyHost: endpoint.host,
             proxyPort: endpoint.port,
             endpointId: ticket.endpoint_id,
@@ -560,7 +561,7 @@ function showExamChoices(exams) {
     examList.hidden = false;
     examList.replaceChildren();
     if (!exams.length) {
-        entryError.textContent = 'No exams are currently assigned to this account.';
+        entryError.textContent = '暂无可用考试';
         entryError.hidden = false;
         status.textContent = 'Signed in; no exam assignments';
         return;
@@ -606,7 +607,7 @@ async function loadAvailableExams() {
         showExamChoices(await response.json());
     }
     catch {
-        entryError.textContent = 'Unable to reach the exam service.';
+        entryError.textContent = '暂无可用考试';
         entryError.hidden = false;
     }
     finally {

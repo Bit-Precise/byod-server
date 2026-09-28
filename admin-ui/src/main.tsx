@@ -16,6 +16,7 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronRight,
+  ChevronLeft,
   ClipboardList,
   Clock3,
   Database,
@@ -246,6 +247,8 @@ function profileInitial(user: components["schemas"]["User"]) {
   return Array.from(profileLabel(user).trim())[0] || "?";
 }
 
+const USERS_PAGE_SIZE = 50;
+
 function App() {
   const [user, setUser] = useState<components["schemas"]["User"] | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -257,6 +260,8 @@ function App() {
   const [participants, setParticipants] = useState<{ examId: string; students: Student[]; admins: ExamAdmin[] } | null>(null);
   const [participantsRevision, setParticipantsRevision] = useState(0);
   const [users, setUsers] = useState<components["schemas"]["User"][]>([]);
+  const [usersPage, setUsersPage] = useState(1);
+  const [usersTotal, setUsersTotal] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [sessionTimeline, setSessionTimeline] = useState<{ sessionId: string; events: Event[] } | null>(null);
@@ -323,9 +328,14 @@ function App() {
     setEvents((result.data || []) as Event[]);
   }, []);
   const loadUsers = useCallback(async () => {
-    const result = await api.GET("/admin/api/users");
-    if (!result.error) setUsers((result.data || []) as components["schemas"]["User"][]);
-  }, []);
+    const result = await api.GET("/admin/api/users", {
+      params: { query: { page: usersPage, page_size: USERS_PAGE_SIZE } },
+    });
+    if (!result.error) {
+      setUsers((result.data || []) as components["schemas"]["User"][]);
+      setUsersTotal(Number(result.response.headers.get("X-Total-Count") || 0));
+    }
+  }, [usersPage]);
   const refresh = useCallback(async () => {
     setBusy(true);
     setError("");
@@ -564,7 +574,7 @@ function App() {
               }
             />
           )}
-          {section === "users" && <UsersPage users={users} onRefresh={() => void loadUsers()} />}
+          {section === "users" && <UsersPage users={users} page={usersPage} total={usersTotal} onPageChange={setUsersPage} onRefresh={() => void loadUsers()} />}
           {section === "students" && (
               <StudentsPage
               exams={exams}
@@ -1404,7 +1414,7 @@ function StudentsPage({
   );
 }
 
-function UsersPage({users, onRefresh}: {users: components["schemas"]["User"][]; onRefresh: () => void}) {
+function UsersPage({users, page, total, onPageChange, onRefresh}: {users: components["schemas"]["User"][]; page: number; total: number; onPageChange: (page: number) => void; onRefresh: () => void}) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [platformAdmin, setPlatformAdmin] = useState(false);
@@ -1428,7 +1438,7 @@ function UsersPage({users, onRefresh}: {users: components["schemas"]["User"][]; 
       <label className="flex items-center gap-2 rounded-md border px-3 text-sm"><input type="checkbox" checked={platformAdmin} onChange={e=>setPlatformAdmin(e.target.checked)} />平台管理员</label>
       <Button type="submit" disabled={saving}>{saving ? "添加中…" : "添加用户"}</Button>
     </form></CardContent></Card>
-    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>平台管理员是全局能力；考试管理员在每场考试单独配置；普通用户可以同时具备考试管理员或平台管理员能力。昵称和头像来自 OIDC，用户每次登录后会同步。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>OIDC 昵称</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>平台能力</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.picture || undefined} /><AvatarFallback>{profileInitial(user)}</AvatarFallback></Avatar><div><div className="font-medium">{profileLabel(user)}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></div></div></TableCell><TableCell>{user.nickname || "—"}</TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.platform_admin ? "warning" : "secondary"}>{user.platform_admin ? "平台管理员" : "普通用户"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{platform_admin:!user.platform_admin})}>{user.platform_admin ? "取消平台管理员" : "设为平台管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={7} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent></Card>
+    <Card><CardHeader><CardTitle>用户目录</CardTitle><CardDescription>平台管理员是全局能力；考试管理员在每场考试单独配置；普通用户可以同时具备考试管理员或平台管理员能力。昵称和头像来自 OIDC，用户每次登录后会同步。</CardDescription></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow><TableHead>用户</TableHead><TableHead>OIDC 昵称</TableHead><TableHead>邮箱</TableHead><TableHead>OIDC Subject</TableHead><TableHead>平台能力</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.map(user=><TableRow key={user.id}><TableCell><div className="flex items-center gap-3"><Avatar><AvatarImage src={user.picture || undefined} /><AvatarFallback>{profileInitial(user)}</AvatarFallback></Avatar><div><div className="font-medium">{profileLabel(user)}</div><div className="font-mono text-[11px] text-slate-400">{user.id}</div></div></div></TableCell><TableCell>{user.nickname || "—"}</TableCell><TableCell>{user.email || "—"}</TableCell><TableCell className="max-w-xs truncate font-mono text-xs text-slate-500">{user.subject || "尚未登录绑定"}</TableCell><TableCell><Badge variant={user.platform_admin ? "warning" : "secondary"}>{user.platform_admin ? "平台管理员" : "普通用户"}</Badge></TableCell><TableCell><Badge variant={user.enabled ? "success" : "destructive"}>{user.enabled ? "启用" : "停用"}</Badge></TableCell><TableCell><div className="flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={()=>void update(user,{enabled:!user.enabled})}>{user.enabled ? "停用" : "启用"}</Button>{user.subject && <Button size="sm" variant="ghost" onClick={()=>void update(user,{platform_admin:!user.platform_admin})}>{user.platform_admin ? "取消平台管理员" : "设为平台管理员"}</Button>}</div></TableCell></TableRow>)}{!users.length&&<TableRow><TableCell colSpan={7} className="py-14 text-center text-slate-500">暂无用户</TableCell></TableRow>}</TableBody></Table></CardContent><div className="flex items-center justify-between border-t px-4 py-3 text-sm text-slate-500"><span>{total ? `第 ${(page - 1) * USERS_PAGE_SIZE + 1}–${Math.min(page * USERS_PAGE_SIZE, total)} 条，共 ${total} 条` : "暂无用户"}</span><div className="flex items-center gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}><ChevronLeft />上一页</Button><span>第 {page} 页</span><Button size="sm" variant="outline" disabled={page * USERS_PAGE_SIZE >= total} onClick={() => onPageChange(page + 1)}>下一页<ChevronRight /></Button></div></div></Card>
   </>;
 }
 function StudentRow({
@@ -1441,6 +1451,7 @@ function StudentRow({
   onChanged: () => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const toggle = async () => {
     const result = await api.PUT("/admin/api/exams/{examId}/participants/{userId}", {
       params: { path: { examId, userId: student.user.id } },
@@ -1464,6 +1475,21 @@ function StudentRow({
     toast.add({ title: "学生已移除", description: student.user.id, type: "success" });
     onChanged();
   };
+  const resetCompletion = async () => {
+    const result = await api.POST("/admin/api/exams/{examId}/participants/{userId}/reset-completion", {
+      params: { path: { examId, userId: student.user.id } },
+    });
+    if (result.error) {
+      toast.add({ title: "恢复考试资格失败", description: student.user.id, type: "error" });
+      return;
+    }
+    toast.add({
+      title: result.data?.reset ? "已恢复考试资格" : "未发现交卷记录",
+      description: result.data?.reset ? "学生重新进入时会创建新的 Session。" : undefined,
+      type: "success",
+    });
+    onChanged();
+  };
   return (
     <>
     <TableRow>
@@ -1481,9 +1507,12 @@ function StudentRow({
         <div>{student.user.subject || "尚未登录绑定"}</div>
       </TableCell>
       <TableCell>
-        <Badge variant={student.enabled ? "success" : "secondary"}>
-          {student.enabled ? "已启用" : "已禁用"}
-        </Badge>
+        <div className="flex flex-wrap gap-1">
+          <Badge variant={student.enabled ? "success" : "secondary"}>
+            {student.enabled ? "已启用" : "已禁用"}
+          </Badge>
+          {student.completed && <Badge variant="warning">已交卷</Badge>}
+        </div>
       </TableCell>
       <TableCell>
         <div className="flex justify-end gap-1">
@@ -1498,6 +1527,16 @@ function StudentRow({
           >
             移除
           </Button>
+          {student.completed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-emerald-700 hover:bg-emerald-50"
+              onClick={() => setResetOpen(true)}
+            >
+              恢复考试
+            </Button>
+          )}
         </div>
       </TableCell>
     </TableRow>
@@ -1519,6 +1558,27 @@ function StudentRow({
             }}
           >
             移除学生
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>恢复这名学生的考试资格？</AlertDialogTitle>
+          <AlertDialogDescription>
+            将撤销 {profileLabel(student.user)} 在本场考试的交卷记录；原来的 Session 和审计记录会保留，学生下次进入时会创建新的 Session。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              void resetCompletion();
+              setResetOpen(false);
+            }}
+          >
+            恢复考试资格
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -1756,6 +1816,7 @@ function ExamDialog({
   const [name, setName] = useState("");
   const [hashtag, setHashtag] = useState("");
   const [baseURL, setBaseURL] = useState("");
+  const [tunnelHosts, setTunnelHosts] = useState("");
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
   const [policy, setPolicy] = useState("{}");
@@ -1771,11 +1832,12 @@ function ExamDialog({
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
     setEnds(exam?.ends_at ? exam.ends_at.slice(0, 16) : "");
     const examPolicy = exam?.policy as
-      | { browser?: { require_fullscreen?: unknown; lock_fullscreen?: unknown } }
+      | { browser?: { require_fullscreen?: unknown; lock_fullscreen?: unknown }; tunnel_hosts?: unknown }
       | undefined;
     setPolicy(exam?.policy ? JSON.stringify(exam.policy, null, 2) : "{}");
     setRequireFullscreen(examPolicy?.browser?.require_fullscreen === true);
     setLockFullscreen(examPolicy?.browser?.lock_fullscreen === true);
+    setTunnelHosts(Array.isArray(examPolicy?.tunnel_hosts) ? examPolicy.tunnel_hosts.filter((host): host is string => typeof host === "string").join("\n") : "");
     setFormError("");
   }, [exam, open]);
   const submit = async (event: FormEvent) => {
@@ -1804,6 +1866,7 @@ function ExamDialog({
       require_fullscreen: requireFullscreen,
       lock_fullscreen: requireFullscreen && lockFullscreen,
     };
+    policyValue.tunnel_hosts = tunnelHosts.split(/[\s,]+/).map((host) => host.trim()).filter(Boolean);
     if (!name.trim() || !hashtag.trim() || !baseURL.trim()) {
       setFormError("考试名称、hashtag 和源站 URL 不能为空。");
       return;
@@ -1892,6 +1955,20 @@ function ExamDialog({
               用户可见的考试标签；内部 UUID 由服务端自动生成且不可修改。
             </p>
           </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="exam-tunnel-hosts">Tunnel hosts</Label>
+          <Textarea
+            id="exam-tunnel-hosts"
+            className="min-h-20 font-mono text-xs"
+            value={tunnelHosts}
+            onChange={(event) => setTunnelHosts(event.target.value)}
+            placeholder={'cs101.gbu.edu.cn\nminio.cs101.gbu.edu.cn'}
+            spellCheck={false}
+          />
+          <p className="text-xs text-slate-500">
+            每行一个精确域名；只有这里列出的 HTTPS host 走透明 tunnel。留空表示不启用 tunnel，源站 Base URL 不会自动加入。
+          </p>
         </div>
         {exam && <p className="-mt-2 font-mono text-xs text-slate-400">UUID: {exam.id} · 当前状态由服务端状态机管理：{stateLabel(exam.state)}</p>}
         <div className="space-y-2">

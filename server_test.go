@@ -99,6 +99,33 @@ func TestConfigurationIncludesConfiguredSourcePageURL(t *testing.T) {
 	}
 }
 
+func TestPolicyUsesOnlyExplicitTunnelHosts(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "https://cs101.gbu.edu.cn/paper/category/exam", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.PolicyOverrides = map[string]map[string]any{
+		"course-101": {"tunnel_hosts": []any{"CS101.GBU.EDU.CN", "minio.cs101.gbu.edu.cn", "CS101.GBU.EDU.CN"}},
+	}
+	document := service.policy("course-101")["document"].(map[string]any)
+	got := document["tunnel_hosts"].([]string)
+	want := []string{"cs101.gbu.edu.cn", "minio.cs101.gbu.edu.cn"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("tunnel_hosts = %#v, want %#v", got, want)
+	}
+	service.PolicyOverrides["course-101"] = map[string]any{}
+	document = service.policy("course-101")["document"].(map[string]any)
+	if hosts := document["tunnel_hosts"].([]string); len(hosts) != 0 {
+		t.Fatalf("empty tunnel_hosts unexpectedly inherited source host: %#v", hosts)
+	}
+}
+
+func TestPolicyOverrideRejectsInvalidTunnelHost(t *testing.T) {
+	if _, err := ParsePolicyOverrides([]byte(`{"course-101":{"tunnel_hosts":["https://cs101.gbu.edu.cn"]}}`)); err == nil {
+		t.Fatal("URL-form tunnel host was accepted")
+	}
+}
+
 func TestConfigurationSelectsPrivateTunnelEndpointByClientCIDR(t *testing.T) {
 	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
 	if err != nil {

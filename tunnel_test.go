@@ -37,6 +37,9 @@ func TestReadConnectTunnelAuth(t *testing.T) {
 		!bytes.Equal(auth.Nonce, nonce) || !bytes.Equal(auth.Proof, proof) {
 		t.Fatalf("unexpected CONNECT auth: %#v", auth)
 	}
+	if auth.Target != "source.example:443" {
+		t.Fatalf("unexpected CONNECT target: %q", auth.Target)
+	}
 }
 
 func TestReadConnectTunnelAuthRejectsMalformedRequests(t *testing.T) {
@@ -195,6 +198,9 @@ func TestServeTunnelForwardsInnerTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.PolicyOverrides = map[string]map[string]any{
+		"course-101": {"tunnel_hosts": []string{"127.0.0.1"}},
+	}
 	session := activateTestSession(t, service, "course-101")
 	ticket, info, err := service.IssueTunnelTicket(context.Background(), session["session_id"])
 	if err != nil {
@@ -251,6 +257,22 @@ func TestParseTunnelUpstream(t *testing.T) {
 	}
 	if _, err := parseTunnelUpstream(mustURL("http://example.test")); err == nil {
 		t.Fatal("HTTP upstream accepted")
+	}
+}
+
+func TestTunnelAddressRequiresExplicitTunnelHost(t *testing.T) {
+	service, err := NewService("https://exam.cs.ac.cn", "https://cs101.gbu.edu.cn", []byte("test-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.PolicyOverrides = map[string]map[string]any{
+		"course-101": {"tunnel_hosts": []string{"cs101.gbu.edu.cn", "minio.cs101.gbu.edu.cn"}},
+	}
+	if got, err := service.tunnelAddress(context.Background(), "course-101", "minio.cs101.gbu.edu.cn:443"); err != nil || got != "minio.cs101.gbu.edu.cn:443" {
+		t.Fatalf("allowlisted tunnel address = %q, %v", got, err)
+	}
+	if _, err := service.tunnelAddress(context.Background(), "course-101", "other.example:443"); err == nil {
+		t.Fatal("unlisted tunnel host was accepted")
 	}
 }
 

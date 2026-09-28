@@ -62,8 +62,9 @@ type User struct {
 	LastLoginAt   *time.Time `json:"last_login_at"`
 }
 type Participant struct {
-	User    User `json:"user"`
-	Enabled bool `json:"enabled"`
+	User      User `json:"user"`
+	Enabled   bool `json:"enabled"`
+	Completed bool `json:"completed"`
 }
 type ExamAdmin struct {
 	User      User      `json:"user"`
@@ -247,6 +248,13 @@ func (s *PostgresStore) ListUsers(ctx context.Context, issuer, query string, lim
 	}
 	return users, rows.Err()
 }
+
+func (s *PostgresStore) CountUsers(ctx context.Context, issuer, query string) (int, error) {
+	var total int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM byod_users WHERE issuer=$1 AND ($2='' OR strpos(lower(coalesce(email,'')||' '||display_name||' '||nickname||' '||coalesce(subject,'')),lower($2))>0)`, issuer, query).Scan(&total)
+	return total, err
+}
+
 func (s *PostgresStore) GetUser(ctx context.Context, id string) (User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM byod_users WHERE id=$1`, id))
 }
@@ -338,12 +346,62 @@ func (s *PostgresStore) RemoveParticipant(ctx context.Context, exam, id, actor s
 	}
 	return tx.Commit()
 }
+
+// ResetExamCompletion removes the one-time completion claim for one assigned
+// user. It deliberately does not reopen an old session: the student must
+// create a fresh session on the next entry, while the old attempt and its
+// audit trail remain intact. The exam row is locked so this cannot race a
+// simultaneous completion transaction.
+func (s *PostgresStore) ResetExamCompletion(ctx context.Context, exam, userID, actor string) (bool, string, error) {
+	key, err := s.resolveExamID(ctx, exam)
+	if err != nil {
+		return false, "", err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, "", err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err = tx.QueryRowContext(ctx, `SELECT id::text FROM byod_exams WHERE id=$1::uuid FOR UPDATE`, key).Scan(&locked); err != nil {
+		return false, "", err
+	}
+	var subject string
+	if err = tx.QueryRowContext(ctx, `SELECT subject FROM byod_users WHERE id=$1 AND subject IS NOT NULL`, userID).Scan(&subject); err != nil {
+		return false, "", err
+	}
+	var completedSession string
+	err = tx.QueryRowContext(ctx, `DELETE FROM byod_exam_completions WHERE exam_id=$1 AND subject=$2 RETURNING session_id`, key, subject).Scan(&completedSession)
+	if errors.Is(err, sql.ErrNoRows) {
+		if err = tx.Commit(); err != nil {
+			return false, subject, err
+		}
+		return false, subject, nil
+	}
+	if err != nil {
+		return false, subject, err
+	}
+	details := string(canonicalJSON(map[string]any{
+		"exam_id": exam, "user_id": userID, "completion_session_id": completedSession,
+	}))
+	if err = auditUser(ctx, tx, actor, userID, "exam_completion_reset", details); err != nil {
+		return false, subject, err
+	}
+	// Keep the reset visible on the original attempt's timeline without
+	// changing its terminal state.
+	_, _ = tx.ExecContext(ctx, `INSERT INTO byod_events(id,session_id,type,severity,details,occurred_at) SELECT $1,id,'exam_completion_reset','warning',$2,now() FROM byod_sessions WHERE id=$3`, randomToken(12), details, completedSession)
+	if err = tx.Commit(); err != nil {
+		return false, subject, err
+	}
+	return true, subject, nil
+}
+
 func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Participant, error) {
 	key, err := s.resolveExamID(ctx, exam)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.nickname,u.picture,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY COALESCE(NULLIF(u.nickname,''),NULLIF(u.display_name,''),u.id),u.id`, key)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.nickname,u.picture,u.role,u.platform_admin,u.enabled,u.created_at,u.last_login_at,p.enabled,EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=p.exam_id AND c.subject=u.subject) FROM byod_exam_participants p JOIN byod_users u ON u.id=p.user_id WHERE p.exam_id=$1 ORDER BY COALESCE(NULLIF(u.nickname,''),NULLIF(u.display_name,''),u.id),u.id`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +410,7 @@ func (s *PostgresStore) ListParticipants(ctx context.Context, exam string) ([]Pa
 	for rows.Next() {
 		var p Participant
 		u := &p.User
-		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Nickname, &u.Picture, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &p.Enabled); err != nil {
+		if err = rows.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.DisplayName, &u.Nickname, &u.Picture, &u.Role, &u.PlatformAdmin, &u.Enabled, &u.CreatedAt, &u.LastLoginAt, &p.Enabled, &p.Completed); err != nil {
 			return nil, err
 		}
 		if u.PlatformAdmin {

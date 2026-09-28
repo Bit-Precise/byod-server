@@ -23,6 +23,10 @@
       "allowed_paths": ["/course-101/**"],
       "blocked_schemes": ["file", "javascript", "data", "devtools"]
     },
+    "tunnel_hosts": [
+      "cs101.gbu.edu.cn",
+      "minio.cs101.gbu.edu.cn"
+    ],
     "violations": {
       "on_background": "suspend",
       "on_new_tab": "block",

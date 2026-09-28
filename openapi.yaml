@@ -37,7 +37,7 @@ paths:
     put: {operationId: addExamStudent, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/StudentInput'}}}}, responses: {'204': {description: Added}}}
     delete: {operationId: removeExamStudent, responses: {'204': {description: Removed}}}
   /admin/api/users:
-    get: {operationId: listUsers, parameters: [{name: q, in: query, required: false, schema: {type: string}}, {name: limit, in: query, required: false, schema: {type: integer}}, {name: offset, in: query, required: false, schema: {type: integer}}], responses: {'200': {description: Users, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/User'}}}}}}}
+    get: {operationId: listUsers, parameters: [{name: q, in: query, required: false, schema: {type: string}}, {name: page, in: query, required: false, description: 1-based page number (default 1), schema: {type: integer, minimum: 1}}, {name: page_size, in: query, required: false, description: "Items per page (default 50, maximum 100)", schema: {type: integer, minimum: 1, maximum: 100}}, {name: limit, in: query, required: false, description: Legacy alias for page_size, schema: {type: integer, minimum: 1, maximum: 100}}, {name: offset, in: query, required: false, description: Legacy zero-based item offset, schema: {type: integer, minimum: 0}}], responses: {'200': {description: Users page; the JSON body remains an array for compatibility, and pagination metadata is returned in X-Total-Count, X-Page, X-Page-Size, and X-Has-More headers., headers: {X-Total-Count: {schema: {type: integer}}, X-Page: {schema: {type: integer}}, X-Page-Size: {schema: {type: integer}}, X-Has-More: {schema: {type: boolean}}}, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/User'}}}}}}}
     post: {operationId: inviteUser, requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/UserInput'}}}}, responses: {'201': {description: Invited user, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}}}
   /admin/api/users/{userId}:
     parameters: [{name: userId, in: path, required: true, schema: {type: string}}]
@@ -50,6 +50,9 @@ paths:
     parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}, {name: userId, in: path, required: true, schema: {type: string}}]
     put: {operationId: setExamParticipant, requestBody: {required: false, content: {application/json: {schema: {$ref: '#/components/schemas/ParticipantInput'}}}}, responses: {'204': {description: Updated}}}
     delete: {operationId: removeExamParticipant, responses: {'204': {description: Removed}}}
+  /admin/api/exams/{examId}/participants/{userId}/reset-completion:
+    parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}, {name: userId, in: path, required: true, schema: {type: string}}]
+    post: {operationId: resetExamCompletion, responses: {'200': {description: Completion reset, content: {application/json: {schema: {$ref: '#/components/schemas/CompletionReset'}}}}, '404': {description: User or exam not found}}}
   /admin/api/exams/{examId}/admins:
     parameters: [{name: examId, in: path, required: true, schema: {type: string, format: uuid}}]
     get: {operationId: listExamAdmins, responses: {'200': {description: Exam administrators, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ExamAdmin'}}}}}}}
@@ -129,7 +132,8 @@ components:
     UserInput: {type: object, required: [email], properties: {email: {type: string, format: email}, display_name: {type: string}, platform_admin: {type: boolean}, role: {type: string, deprecated: true, enum: [student, admin]}}}
     UserUpdate: {type: object, properties: {display_name: {type: string}, platform_admin: {type: boolean}, role: {type: string, deprecated: true, enum: [student, admin]}, enabled: {type: boolean}}}
     ExamAdmin: {type: object, required: [user, enabled, created_at], properties: {user: {$ref: '#/components/schemas/User'}, enabled: {type: boolean}, created_at: {type: string, format: date-time}}}
-    Participant: {type: object, required: [user, enabled], properties: {user: {$ref: '#/components/schemas/User'}, enabled: {type: boolean}}}
+    Participant: {type: object, required: [user, enabled, completed], properties: {user: {$ref: '#/components/schemas/User'}, enabled: {type: boolean}, completed: {type: boolean, description: Whether this user's one-time completion claim exists}}}
+    CompletionReset: {type: object, required: [exam_id, user_id, reset], properties: {exam_id: {type: string}, user_id: {type: string}, reset: {type: boolean}}}
     ParticipantInput: {type: object, properties: {enabled: {type: boolean}}}
     UserAudit: {type: object, required: [id, actor_id, user_id, action, occurred_at], properties: {id: {type: integer}, actor_id: {type: string}, user_id: {type: string}, action: {type: string}, details: {type: string}, occurred_at: {type: string, format: date-time}}}
     AuthMe: {type: object, required: [user, csrf_token, capabilities], properties: {user: {$ref: '#/components/schemas/User'}, csrf_token: {type: string}, capabilities: {type: object, required: [platform_admin, exam_admin], properties: {platform_admin: {type: boolean}, exam_admin: {type: boolean}}}}}

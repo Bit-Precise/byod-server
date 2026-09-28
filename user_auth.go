@@ -328,21 +328,64 @@ func decodeUserInput(r *http.Request, v any) error {
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(v)
 }
+
+type userPagination struct {
+	Page     int
+	PageSize int
+	Offset   int
+}
+
+// parseUserPagination accepts the page-based API used by new clients and the
+// limit/offset form used by older clients. The response remains a JSON array
+// for compatibility; pagination metadata is returned in response headers.
+func parseUserPagination(values url.Values) userPagination {
+	page, pageSize := 1, 50
+	if n, err := strconv.Atoi(values.Get("page")); err == nil && n > 0 {
+		page = n
+	}
+	if n, err := strconv.Atoi(values.Get("page_size")); err == nil && n > 0 && n <= 100 {
+		pageSize = n
+	}
+	// limit/offset take precedence when supplied, so existing API clients keep
+	// their exact behavior while page/page_size provide a simpler interface.
+	if n, err := strconv.Atoi(values.Get("limit")); err == nil && n > 0 && n <= 100 {
+		pageSize = n
+	}
+	maxInt := int(^uint(0) >> 1)
+	offset := 0
+	if page > 1 {
+		if page-1 > maxInt/pageSize {
+			offset = maxInt
+		} else {
+			offset = (page - 1) * pageSize
+		}
+	}
+	if n, err := strconv.Atoi(values.Get("offset")); err == nil && n >= 0 {
+		offset = n
+		page = offset/pageSize + 1
+	}
+	return userPagination{Page: page, PageSize: pageSize, Offset: offset}
+}
+
 func (s *Service) globalUserAPI(w http.ResponseWriter, r *http.Request, actor User) bool {
 	if r.URL.Path == "/admin/api/users" {
 		switch r.Method {
 		case http.MethodGet:
-			limit, offset := 50, 0
-			if n, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && n > 0 && n <= 100 {
-				limit = n
+			pagination := parseUserPagination(r.URL.Query())
+			query := r.URL.Query().Get("q")
+			total, err := s.ExamStore.CountUsers(r.Context(), s.identityIssuer(), query)
+			if err != nil {
+				s.userError(w, err)
+				return true
 			}
-			if n, e := strconv.Atoi(r.URL.Query().Get("offset")); e == nil && n >= 0 {
-				offset = n
-			}
-			users, err := s.ExamStore.ListUsers(r.Context(), s.identityIssuer(), r.URL.Query().Get("q"), limit, offset)
+			users, err := s.ExamStore.ListUsers(r.Context(), s.identityIssuer(), query, pagination.PageSize, pagination.Offset)
 			if err != nil {
 				s.userError(w, err)
 			} else {
+				w.Header().Set("X-Total-Count", strconv.Itoa(total))
+				w.Header().Set("X-Page", strconv.Itoa(pagination.Page))
+				w.Header().Set("X-Page-Size", strconv.Itoa(pagination.PageSize))
+				w.Header().Set("X-Has-More", strconv.FormatBool(pagination.Offset+len(users) < total))
 				s.writeJSON(w, 200, users)
 			}
 		case http.MethodPost:

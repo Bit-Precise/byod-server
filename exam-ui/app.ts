@@ -13,6 +13,7 @@ type ExamConfig = {
     source_url?: string;
     source_origin?: string;
     source_host?: string;
+    tunnel_hosts?: string[];
     proxy_origin: string;
     unlock_path: string;
     state?: string;
@@ -26,6 +27,7 @@ type ExamConfig = {
     document: {
       exam_id?: string;
       allowed_origins?: string[];
+      tunnel_hosts?: string[];
       navigation?: {allowed_origins?: string[]};
       browser?: {require_fullscreen?: boolean; lock_fullscreen?: boolean};
       session?: {heartbeat_seconds?: number};
@@ -201,6 +203,7 @@ async function activateTunnel(config: ExamConfig, sessionID: string,
   const endpoint = endpointAddress(config);
   if (!sendNativeMessage('setByodTunnelConfig', [{
     sourceHost: config.exam.source_host || sourceOrigin(config).hostname,
+    tunnelHosts: config.policy.document?.tunnel_hosts || [],
     proxyHost: endpoint.host,
     proxyPort: endpoint.port,
     endpointId: ticket.endpoint_id,
@@ -626,7 +629,7 @@ function showExamChoices(exams: AvailableExam[]) {
   examList.hidden = false;
   examList.replaceChildren();
   if (!exams.length) {
-    entryError.textContent = 'No exams are currently assigned to this account.';
+    entryError.textContent = '暂无可用考试';
     entryError.hidden = false;
     status.textContent = 'Signed in; no exam assignments';
     return;
@@ -670,7 +673,7 @@ async function loadAvailableExams() {
     if (!response.ok) throw new Error('exam list failed');
     showExamChoices(await response.json() as AvailableExam[]);
   } catch {
-    entryError.textContent = 'Unable to reach the exam service.';
+    entryError.textContent = '暂无可用考试';
     entryError.hidden = false;
   } finally {
     login.disabled = false;

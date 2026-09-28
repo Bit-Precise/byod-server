@@ -225,11 +225,19 @@ func ParsePolicyOverrides(data []byte) (map[string]map[string]any, error) {
 		return nil, err
 	}
 	if id, ok := single["exam_id"].(string); ok && id != "" {
+		if _, err := parseTunnelHosts(single["tunnel_hosts"]); err != nil {
+			return nil, err
+		}
 		return map[string]map[string]any{id: single}, nil
 	}
 	var keyed map[string]map[string]any
 	if err := json.Unmarshal(data, &keyed); err != nil {
 		return nil, err
+	}
+	for id, document := range keyed {
+		if _, err := parseTunnelHosts(document["tunnel_hosts"]); err != nil {
+			return nil, fmt.Errorf("exam %s: %w", id, err)
+		}
 	}
 	return keyed, nil
 }
@@ -253,6 +261,10 @@ func (s *Service) policy(examID string) map[string]any {
 			"endpoint_id": examID,
 			"transport":   "byod-tunnel-v1",
 		},
+		// Keep the routing allowlist at the signed document top level so the
+		// browser can pass it to native code without deriving it from the
+		// navigation allowlist.
+		"tunnel_hosts": []string{},
 		"browser": map[string]any{
 			// The fields mirror the first SEB-style baseline. Chromium's native
 			// enforcement consumes these values; keeping them in the signed
@@ -316,6 +328,15 @@ func (s *Service) policy(examID string) map[string]any {
 	}
 	document["exam_id"] = examID
 	document["allowed_origins"] = []string{s.ExamOrigin, sourceOrigin}
+	// tunnel_hosts is an explicit destination allowlist. In particular, do
+	// not fall back to sourceHost: an exam with no configured tunnel hosts
+	// must not unexpectedly proxy its source or any other hostname.
+	tunnelHosts, err := parseTunnelHosts(document["tunnel_hosts"])
+	if err != nil {
+		// Invalid legacy database policies fail closed, never partially apply.
+		tunnelHosts = []string{}
+	}
+	document["tunnel_hosts"] = tunnelHosts
 	return map[string]any{"key_id": "dev-hmac-1", "alg": "HS256", "document": document,
 		"signature": s.sign(document)}
 }
@@ -329,7 +350,7 @@ func (s *Service) sourceOrigin(examID string) (origin, host string) {
 }
 
 // sourceDetails separates the browser-facing page URL from the origin used
-// for navigation policy and the host used to select the transparent tunnel.
+// for navigation policy. Tunnel routing is controlled only by tunnel_hosts.
 func (s *Service) sourceDetails(examID string) (page, origin, host string) {
 	upstream, err := s.upstreamForExam(context.Background(), examID)
 	if err != nil || upstream == nil || upstream.Hostname() == "" {
@@ -344,6 +365,67 @@ func (s *Service) sourceDetails(examID string) (page, origin, host string) {
 	originURL.ForceQuery = false
 	originURL.Fragment = ""
 	return pageURL.String(), originURL.String(), host
+}
+
+// parseTunnelHosts accepts exact ASCII DNS names (IDNs use punycode) and
+// canonical IPv4 addresses. Missing/null/empty means no hosts, never Base URL.
+func parseTunnelHosts(value any) ([]string, error) {
+	var raw []string
+	switch list := value.(type) {
+	case nil:
+		return []string{}, nil
+	case []string:
+		raw = list
+	case []any:
+		for _, item := range list {
+			host, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("tunnel_hosts must be an array of hostnames")
+			}
+			raw = append(raw, host)
+		}
+	default:
+		return nil, fmt.Errorf("tunnel_hosts must be an array of hostnames")
+	}
+	if len(raw) > 64 {
+		return nil, fmt.Errorf("tunnel_hosts supports at most 64 hosts")
+	}
+	result := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		host := strings.ToLower(strings.TrimSpace(item))
+		if !validTunnelHost(host) {
+			return nil, fmt.Errorf("invalid tunnel_hosts entry %q: use an exact hostname without scheme, port, path or wildcard", item)
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		result = append(result, host)
+	}
+	return result, nil
+}
+
+func validTunnelHost(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	// Chromium canonicalizes IPv4 aliases (e.g. 127.1). Reject non-canonical
+	// IP literals so the browser and server cannot disagree about the host.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.To4() != nil && ip.String() == host
+	}
+	return true
 }
 
 func mergePolicyValue(document map[string]any, key string, value any) {
@@ -1224,6 +1306,23 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if len(parts) == 7 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "participants" && parts[6] == "reset-completion" && r.Method == http.MethodPost {
+		reset, subject, err := s.ExamStore.ResetExamCompletion(r.Context(), parts[3], parts[5], actor.ID)
+		if err != nil {
+			s.userError(w, err)
+			return
+		}
+		if reset {
+			// This map is used only by the no-database protocol mode, but clearing
+			// it here also makes an administrator reset safe if a mixed-mode test
+			// service happens to retain an in-memory completion.
+			s.mu.Lock()
+			delete(s.completions, parts[3]+"\x00"+subject)
+			s.mu.Unlock()
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{"exam_id": parts[3], "user_id": parts[5], "reset": reset})
 		return
 	}
 	if len(parts) == 5 && parts[0] == "admin" && parts[1] == "api" && parts[2] == "exams" && parts[4] == "publish" && r.Method == http.MethodPost {

@@ -272,6 +272,9 @@ func (s *PostgresStore) validateExamDefinition(name, hashtag, base string, start
 	}
 	p := []byte(`{}`)
 	if policy != nil {
+		if _, err := parseTunnelHosts(policy["tunnel_hosts"]); err != nil {
+			return nil, nil, err
+		}
 		p, err = json.Marshal(policy)
 		if err != nil {
 			return nil, nil, err
