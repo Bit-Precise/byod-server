@@ -63,6 +63,14 @@ helm upgrade --install byod helm/byod-server \
 访问 `/admin/` 打开控制中心，所有身份均使用 Connect OIDC 登录。权限不是互斥角色：平台管理员由 `platform_admin` 能力授予，可管理全局用户和所有考试；考试管理员通过 `byod_exam_admins` 单独绑定到某场考试，只能管理该考试；普通用户是全局用户目录中的基础身份，也可以同时拥有上述任一能力和考试参加资格。首次部署通过 `BYOD_ADMIN_EMAILS`（Helm 的 `adminEmails`）指定可自动成为平台管理员的已验证邮箱。
 后台提供考试、全局用户、考试管理员、考试参加资格、session 和审计日志管理。管理员可以先按邮箱建立用户，再把用户加入考试名单或授予某场考试的管理员能力；只有启用且已通过 OIDC 绑定的用户可以参加，空名单也按拒绝参加处理。用户首次 OIDC 登录后会保存 `nickname` 和 `picture` claim，并在用户目录、考试名单和管理员列表中展示。
 
+批量把所有启用的普通用户加入一场考试，可使用
+[`scripts/add-all-students-to-exam.sh`](scripts/add-all-students-to-exam.sh)。脚本默认只预览，确认后加 `--apply`；它只插入尚未存在的参加者记录，不会覆盖或撤销已有记录，并会写入审计日志：
+
+```bash
+./scripts/add-all-students-to-exam.sh 2fad0191-a522-4f23-8607-1a1717ebdbdd
+./scripts/add-all-students-to-exam.sh --apply 2fad0191-a522-4f23-8607-1a1717ebdbdd
+```
+
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
 `tunnel.endpoint` 必须指向可直通 Pod 8788 的 TCP 地址；`tunnel.service` 仅创建
