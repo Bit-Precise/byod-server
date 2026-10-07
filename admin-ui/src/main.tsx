@@ -89,7 +89,8 @@ import {
   TableHeader,
   TableRow,
 } from "./components/ui/table";
-import { Textarea } from "./components/ui/textarea";
+import { ExamPolicyEditor } from "./components/exam-policy-editor";
+import { serializePolicy, validatePolicy, type ExamPolicy } from "./lib/exam-policy";
 import {
   Sheet,
   SheetContent,
@@ -1815,12 +1816,10 @@ function ExamDialog({
   const [name, setName] = useState("");
   const [hashtag, setHashtag] = useState("");
   const [baseURL, setBaseURL] = useState("");
-  const [tunnelHosts, setTunnelHosts] = useState("");
   const [starts, setStarts] = useState("");
   const [ends, setEnds] = useState("");
-  const [policy, setPolicy] = useState("{}");
-  const [requireFullscreen, setRequireFullscreen] = useState(false);
-  const [lockFullscreen, setLockFullscreen] = useState(false);
+  const [policy, setPolicy] = useState<ExamPolicy>({});
+  const [policyErrors, setPolicyErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -1830,42 +1829,21 @@ function ExamDialog({
     setBaseURL(exam?.base_url || "");
     setStarts(exam?.starts_at ? exam.starts_at.slice(0, 16) : "");
     setEnds(exam?.ends_at ? exam.ends_at.slice(0, 16) : "");
-    const examPolicy = exam?.policy as
-      | { browser?: { require_fullscreen?: unknown; lock_fullscreen?: unknown }; tunnel_hosts?: unknown }
-      | undefined;
-    setPolicy(exam?.policy ? JSON.stringify(exam.policy, null, 2) : "{}");
-    setRequireFullscreen(examPolicy?.browser?.require_fullscreen === true);
-    setLockFullscreen(examPolicy?.browser?.lock_fullscreen === true);
-    setTunnelHosts(Array.isArray(examPolicy?.tunnel_hosts) ? examPolicy.tunnel_hosts.filter((host): host is string => typeof host === "string").join("\n") : "");
+    setPolicy(exam?.policy || {});
+    setPolicyErrors({});
     setFormError("");
   }, [exam, open]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (saving) return;
     setFormError("");
-    let policyValue: Record<string, unknown>;
-    try {
-      policyValue = JSON.parse(policy);
-    } catch {
-      setFormError("策略必须是合法 JSON。");
+    const errors = validatePolicy(policy);
+    setPolicyErrors(errors);
+    if (Object.keys(errors).length) {
+      setFormError("请修正浏览器策略中标出的配置项后再保存。");
       return;
     }
-    const browserPolicy = policyValue.browser;
-    if (
-      browserPolicy !== undefined &&
-      (typeof browserPolicy !== "object" ||
-        browserPolicy === null ||
-        Array.isArray(browserPolicy))
-    ) {
-      setFormError("策略中的 browser 必须是 JSON 对象。");
-      return;
-    }
-    policyValue.browser = {
-      ...(browserPolicy as Record<string, unknown> | undefined),
-      require_fullscreen: requireFullscreen,
-      lock_fullscreen: requireFullscreen && lockFullscreen,
-    };
-    policyValue.tunnel_hosts = tunnelHosts.split(/[\s,]+/).map((host) => host.trim()).filter(Boolean);
+    const policyValue = serializePolicy(policy);
     if (!name.trim() || !hashtag.trim() || !baseURL.trim()) {
       setFormError("考试名称、hashtag 和源站 URL 不能为空。");
       return;
@@ -1923,6 +1901,7 @@ function ExamDialog({
       onClose={onClose}
       title={exam ? "编辑考试" : "新建考试"}
       description="配置考试源站、开放时间和浏览器策略"
+      className="sm:max-w-3xl"
     >
       <form
         className="space-y-4"
@@ -1955,20 +1934,6 @@ function ExamDialog({
             </p>
           </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="exam-tunnel-hosts">Tunnel hosts</Label>
-          <Textarea
-            id="exam-tunnel-hosts"
-            className="min-h-20 font-mono text-xs"
-            value={tunnelHosts}
-            onChange={(event) => setTunnelHosts(event.target.value)}
-            placeholder={'cs101.gbu.edu.cn\nminio.cs101.gbu.edu.cn'}
-            spellCheck={false}
-          />
-          <p className="text-xs text-slate-500">
-            每行一个精确域名；只有这里列出的 HTTPS host 走透明 tunnel。留空表示不启用 tunnel，源站 Base URL 不会自动加入。
-          </p>
-        </div>
         {exam && <p className="-mt-2 font-mono text-xs text-slate-400">UUID: {exam.id} · 当前状态由服务端状态机管理：{stateLabel(exam.state)}</p>}
         <div className="space-y-2">
           <Label htmlFor="exam-base">源站 Base URL</Label>
@@ -1980,7 +1945,7 @@ function ExamDialog({
             placeholder="https://cs101.gbu.edu.cn/paper/category/exam"
           />
           <p className="text-xs text-slate-500">
-            使用考试开始后要打开的完整 HTTPS 页面 URL；请求仍通过透明 tunnel 回源。
+            使用考试开始后要打开的完整 HTTPS 页面 URL；是否走 tunnel 由下方 Tunnel hosts 列表决定。
           </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
@@ -2003,52 +1968,12 @@ function ExamDialog({
             />
           </div>
         </div>
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-slate-50/70 px-4 py-3">
-          <div className="space-y-1">
-            <Label htmlFor="exam-require-fullscreen">进入考试后自动全屏</Label>
-            <p className="text-xs text-slate-500">
-              身份认证和策略加载成功后，将整个 BYOD Browser 窗口切换为全屏；考试结束时恢复原状态。
-            </p>
-          </div>
-          <Switch
-            id="exam-require-fullscreen"
-            checked={requireFullscreen}
-            onCheckedChange={(checked) => {
-              setRequireFullscreen(checked);
-              if (!checked) setLockFullscreen(false);
-            }}
-          />
-        </div>
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3">
-          <div className="space-y-1">
-            <Label htmlFor="exam-lock-fullscreen">考试期间禁止退出全屏</Label>
-            <p className="text-xs text-amber-800/80">
-              启用后 Esc、F11 和浏览器菜单的退出全屏操作会被拦截；必须先结束考试或由监考端解除策略。
-            </p>
-          </div>
-          <Switch
-            id="exam-lock-fullscreen"
-            checked={lockFullscreen}
-            disabled={!requireFullscreen}
-            onCheckedChange={setLockFullscreen}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="exam-policy">浏览器策略 JSON</Label>
-          <Textarea
-            id="exam-policy"
-            className="min-h-40 font-mono text-xs"
-            value={policy}
-            onChange={(event) => setPolicy(event.target.value)}
-            spellCheck={false}
-          />
-          <p className="text-xs text-slate-500">
-            策略会在签名后下发给 BYOD Browser；上面的开关会写入
-            browser.require_fullscreen 和 browser.lock_fullscreen，其余高级配置可在这里编辑。
-          </p>
-        </div>
+        <ExamPolicyEditor value={policy} errors={policyErrors} disabled={saving} onChange={(next) => {
+          setPolicy(next);
+          setPolicyErrors((current) => Object.keys(current).length ? validatePolicy(next) : {});
+        }} />
         {formError && (
-          <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
             {formError}
           </p>
         )}

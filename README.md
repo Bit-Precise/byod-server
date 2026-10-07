@@ -110,6 +110,30 @@ BYOD_TEST_DATABASE_URL='postgres://postgres@localhost:5432/byod_test?sslmode=dis
 `encryption=none` 访问 BYOD inbound，并校验双层 TLS 和考试撤销。当前不支持
 stream-up、stream-one、UDP、Mux、Vision 或 XHTTP 的自定义 header/cookie 分片模式。
 
+## 可视化考试策略
+
+管理后台的新建/编辑考试不再要求管理员输入策略 JSON。全屏、额外允许的网站、
+Tunnel hosts、心跳与空闲时间，以及兼容策略均使用表单配置。网站列表填写 origin
+（如 `https://iaaa.gbu.edu.cn`）；Tunnel hosts 只填写主机名，二者互不隐式添加。
+未覆盖的项目继承服务端配置；明确的空列表与继承不同，未知扩展字段会保留。
+
+注意：现有浏览器权限、禁止协议及自定义违规处理有些仍是协议预留，编辑器会逐项
+标注“仅保存并下发，当前版本未按该项执行”，本次 UI 改动不增加原生强制执行能力。
+
+前端回归（Node 22.6+；浏览器测试 mock API，不连接生产或修改考试数据）：
+
+```bash
+cd admin-ui
+npm ci
+npm run typecheck
+npm test
+npx playwright install chromium
+npm run test:ui
+npm run build
+```
+
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` 可指定已有测试用 Chromium 的路径。
+
 ## GitHub Actions / GHCR
 
 `release.yml` 会在 `v*` tag 上运行镜像构建和 Helm chart 发布；`ci.yml` 会在每次提交时重新生成并校验 Go/TypeScript 客户端：

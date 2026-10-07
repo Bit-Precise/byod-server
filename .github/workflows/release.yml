@@ -28,7 +28,12 @@ jobs:
           npm ci
           npm run generate:api
           git diff --exit-code src/api/generated.ts
+          npm run typecheck
+          npm test
           npm run build
+      - name: Test visual policy editor
+        working-directory: admin-ui
+        run: npx playwright install --with-deps chromium && npm run test:ui
 
   validate:
     runs-on: ubuntu-latest
