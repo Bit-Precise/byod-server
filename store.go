@@ -797,8 +797,8 @@ func (s *PostgresStore) RevokeTunnelTickets(ctx context.Context, sessionID strin
 	return err
 }
 
-func (s *PostgresStore) TouchActiveSession(ctx context.Context, sessionID string, now int64) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE byod_sessions SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE id=$1 AND state='active'`, sessionID, now)
+func (s *PostgresStore) TouchActiveSession(ctx context.Context, sessionID string, now, maxIdle int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE byod_sessions SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE id=$1 AND state='active' AND last_seen_at>=to_timestamp($3)`, sessionID, now, now-maxIdle)
 	if err != nil {
 		return false, err
 	}
@@ -826,16 +826,6 @@ AND NOT EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=s.exam_id A
 	return result, err == nil, err
 }
 
-// SuspendIdleSession serializes the control-plane idle decision with data-plane
-// liveness. Only control is allowed to transition session state.
-func (s *PostgresStore) SuspendIdleSession(ctx context.Context, id string, cutoff int64) (bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE byod_sessions SET state='suspended',violation_count=violation_count+1 WHERE id=$1 AND state='active' AND last_seen_at<to_timestamp($2)`, id, cutoff)
-	if err != nil {
-		return false, err
-	}
-	n, err := result.RowsAffected()
-	return n == 1, err
-}
 func (s *PostgresStore) ListSessions(ctx context.Context, id string) ([]StoredSession, error) {
 	key, err := s.resolveExamID(ctx, id)
 	if err != nil {

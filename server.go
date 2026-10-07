@@ -306,7 +306,7 @@ func (s *Service) policy(examID string) map[string]any {
 			"on_new_tab":            "block",
 			"on_devtools":           "block",
 		},
-		"session": map[string]any{"heartbeat_seconds": 15, "max_idle_seconds": 45},
+		"session": map[string]any{"heartbeat_seconds": defaultHeartbeatSeconds, "max_idle_seconds": defaultMaxIdleSeconds},
 	}
 	if override, ok := s.PolicyOverrides[examID]; ok {
 		// The override replaces only the signed document; the server still
@@ -333,6 +333,13 @@ func (s *Service) policy(examID string) map[string]any {
 		tunnelHosts = []string{}
 	}
 	document["tunnel_hosts"] = tunnelHosts
+	heartbeat, maxIdle := sessionLimitsFromDocument(document)
+	session, ok := document["session"].(map[string]any)
+	if !ok {
+		session = map[string]any{}
+		document["session"] = session
+	}
+	session["heartbeat_seconds"], session["max_idle_seconds"] = heartbeat, maxIdle
 	return map[string]any{"key_id": "dev-hmac-1", "alg": "HS256", "document": document,
 		"signature": s.sign(document)}
 }
@@ -437,14 +444,9 @@ func mergePolicyValue(document map[string]any, key string, value any) {
 }
 
 func (s *Service) sessionLimits(examID string) (heartbeat, maxIdle int64) {
-	heartbeat, maxIdle = 15, 45
-	document, _ := s.policy(examID)["document"].(map[string]any)
-	session, _ := document["session"].(map[string]any)
-	if value, ok := policyInt(session["heartbeat_seconds"]); ok && value >= 5 && value <= 300 {
-		heartbeat = value
-	}
-	if value, ok := policyInt(session["max_idle_seconds"]); ok && value >= heartbeat && value <= 3600 {
-		maxIdle = value
+	heartbeat, maxIdle, err := s.sessionLimitsContext(context.Background(), examID)
+	if err != nil {
+		return defaultHeartbeatSeconds, defaultMaxIdleSeconds
 	}
 	return heartbeat, maxIdle
 }
@@ -763,55 +765,16 @@ func (s *Service) enforceIdleTimeout(session *Session) bool {
 	if session == nil {
 		return false
 	}
-	var durable *StoredSession
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	if s.ExamStore != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		var err error
-		durable, err = s.ExamStore.GetSession(ctx, session.ID)
-		if err != nil {
-			return false
-		}
 		allowed, err := s.ExamStore.UserAccess(ctx, s.identityIssuer(), session.Subject, session.ExamID)
 		if err != nil || !allowed {
 			return false
 		}
 	}
-	_, maxIdle := s.sessionLimits(session.ExamID)
-	s.mu.Lock()
-	if durable != nil && durable.State != "active" && durable.State != "authenticated" {
-		s.mu.Unlock()
-		return false
-	}
-	if durable != nil && durable.LastSeenAt.Unix() > session.LastSeenAt {
-		session.LastSeenAt = durable.LastSeenAt.Unix()
-	}
-	suspended := false
-	if session.State == "active" && time.Now().Unix()-session.LastSeenAt > maxIdle {
-		if s.ExamStore != nil {
-			// Atomically compete with data-plane heartbeat updates. A heartbeat
-			// arriving after our read must prevent the idle transition as well.
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			changed, err := s.ExamStore.SuspendIdleSession(ctx, session.ID, time.Now().Unix()-maxIdle)
-			cancel()
-			if err != nil || !changed {
-				s.mu.Unlock()
-				return err == nil
-			}
-		}
-		session.State = "suspended"
-		session.ViolationCount++
-		session.LastViolation = "heartbeat_timeout"
-		s.revokeTunnelTicketsLocked(session.ID)
-		s.appendEvent(session, "heartbeat_timeout", "critical", "")
-		suspended = true
-	}
-	active := session.State == "active" || session.State == "authenticated"
-	s.mu.Unlock()
-	if suspended && s.ExamStore != nil {
-		_ = s.ExamStore.RevokeTunnelTickets(context.Background(), session.ID)
-	}
-	return active
+	state, _, _, _, err := s.refreshSession(ctx, session, false)
+	return err == nil && (state == "active" || state == "authenticated")
 }
 
 func (s *Service) writeJSON(w http.ResponseWriter, status int, value any) {
@@ -1100,7 +1063,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, callback.String(), http.StatusSeeOther)
 			return
 		}
-		s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": session.State})
+		s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": "authenticated"})
 		return
 	}
 	if r.URL.Path == "/dev/authorize" && s.DevAuth {
@@ -1175,18 +1138,28 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
+		if _, _, _, _, err := s.refreshSession(r.Context(), session, false); err != nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_state_unavailable"})
+			return
+		}
 		if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateAuthenticate); gateErr != nil {
 			if errors.Is(gateErr, ErrExamEnded) {
 				s.mu.Lock()
 				session.State = "ended"
 				s.mu.Unlock()
 			}
-			s.writeJSON(w, examErrorStatus(gateErr), map[string]any{"error": gateErr.Error(), "session_id": session.ID, "state": session.State})
+			s.mu.RLock()
+			state := session.State
+			s.mu.RUnlock()
+			s.writeJSON(w, examErrorStatus(gateErr), map[string]any{"error": gateErr.Error(), "session_id": session.ID, "state": state})
 			return
 		}
-		s.writeJSON(w, http.StatusOK, map[string]any{"session_id": session.ID, "exam_id": session.ExamID,
+		s.mu.RLock()
+		response := map[string]any{"session_id": session.ID, "exam_id": session.ExamID,
 			"state": session.State, "subject": session.Subject != "", "violation_count": session.ViolationCount,
-			"last_violation": session.LastViolation, "last_seen_at": session.LastSeenAt})
+			"last_violation": session.LastViolation, "last_seen_at": session.LastSeenAt}
+		s.mu.RUnlock()
+		s.writeJSON(w, http.StatusOK, response)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/v1/sessions/") && len(parts) == 4 && parts[3] == "events" {
@@ -1513,6 +1486,13 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if session, err := s.ExamStore.GetSession(r.Context(), parts[3]); err == nil {
+			current := sessionFromStored(*session, "")
+			state, lastSeen, _, _, err := s.refreshSession(r.Context(), current, false)
+			if err != nil {
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_state_unavailable"})
+				return
+			}
+			session.State, session.LastSeenAt = state, time.Unix(lastSeen, 0).UTC()
 			oldState := session.State
 			if input.Action == "resume" && oldState != "suspended" {
 				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "session_not_suspended"})
@@ -1523,6 +1503,24 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.mu.Lock()
+			nextState := "active"
+			if input.Action == "suspend" {
+				nextState = "suspended"
+			}
+			// Race the scheduler in PostgreSQL, not just the local cache. An
+			// ended session must never be reported as successfully resumed.
+			result, err := s.ExamStore.db.ExecContext(r.Context(), `UPDATE byod_sessions SET state=$3 WHERE id=$1 AND state=$2 AND state<>'ended'`, session.ID, oldState, nextState)
+			if err != nil {
+				s.mu.Unlock()
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "database_error"})
+				return
+			}
+			changed, err := result.RowsAffected()
+			if err != nil || changed != 1 {
+				s.mu.Unlock()
+				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "session_state_changed"})
+				return
+			}
 			if input.Action == "suspend" {
 				session.State = "suspended"
 				s.revokeTunnelTicketsLocked(session.ID)
@@ -1540,7 +1538,6 @@ func (s *Service) adminAPI(w http.ResponseWriter, r *http.Request) {
 			if input.Action == "suspend" && s.ExamStore != nil {
 				_ = s.ExamStore.RevokeTunnelTickets(r.Context(), session.ID)
 			}
-			_ = s.ExamStore.SaveSession(r.Context(), &Session{ID: session.ID, ExamID: session.ExamID, Subject: session.Subject, State: session.State, CreatedAt: session.CreatedAt.Unix(), LastSeenAt: session.LastSeenAt.Unix(), ViolationCount: session.ViolationCount})
 			if auditEvent.ID != "" {
 				_ = s.ExamStore.SaveEvent(r.Context(), auditEvent)
 			}
@@ -1577,11 +1574,16 @@ func (s *Service) completeExamRequest(w http.ResponseWriter, r *http.Request, ex
 		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "active_session_required"})
 		return
 	}
-	if session.State == "ended" {
+	state, _, _, _, err := s.refreshSession(r.Context(), session, false)
+	if err != nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_state_unavailable"})
+		return
+	}
+	if state == "ended" {
 		s.writeExamError(w, ErrExamAlreadyDone)
 		return
 	}
-	if session.State != "active" && session.State != "authenticated" {
+	if state != "active" && state != "authenticated" {
 		s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "active_session_required"})
 		return
 	}
@@ -1685,7 +1687,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			authorizationURL = s.authorizationURL(session)
 		}
 		s.writeJSON(w, http.StatusCreated, map[string]string{"session_id": session.ID, "attempt_id": session.AttemptID, "browser_session_id": session.BrowserSessionID, "browser_token": session.BrowserToken,
-			"authorization_url": authorizationURL, "state": session.State})
+			"authorization_url": authorizationURL, "state": state})
 		// Headers must be set before writeJSON writes the status; this cookie is
 		// also useful when the student follows the public /<exam>/end link.
 		return
@@ -1700,6 +1702,17 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 		if session == nil {
 			s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
+		}
+		if parts[3] != "heartbeat" {
+			state, _, _, _, err := s.refreshSession(r.Context(), session, false)
+			if err != nil {
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_state_unavailable"})
+				return
+			}
+			if parts[3] == "start" && state == "ended" {
+				s.writeJSON(w, http.StatusConflict, map[string]string{"error": "authentication_required", "state": state})
+				return
+			}
 		}
 		if parts[3] == "start" {
 			if _, gateErr := s.examWindow(r.Context(), session.ExamID, gateStart); gateErr != nil {
@@ -1746,7 +1759,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				s.appendEvent(session, "exam_started", "info", "")
 			}
 			s.mu.Unlock()
-			s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": session.State, "proxy_base": "/" + session.ExamID + "/"})
+			s.writeJSON(w, http.StatusOK, map[string]string{"session_id": session.ID, "state": "active", "proxy_base": "/" + session.ExamID + "/"})
 			return
 		}
 		if parts[3] == "end" {
@@ -1794,28 +1807,10 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 				s.writeExamError(w, gateErr)
 				return
 			}
-			s.mu.Lock()
-			now := time.Now().Unix()
-			heartbeat, maxIdle := s.sessionLimits(session.ExamID)
-			revoked := false
-			if session.State == "active" && now-session.LastSeenAt > maxIdle {
-				session.State = "suspended"
-				session.ViolationCount++
-				session.LastViolation = "heartbeat_timeout"
-				s.revokeTunnelTicketsLocked(session.ID)
-				revoked = true
-				s.appendEvent(session, "heartbeat_timeout", "critical", "")
-			} else if session.State == "active" {
-				session.LastSeenAt = now
-			}
-			state := session.State
-			lastSeen := session.LastSeenAt
-			s.mu.Unlock()
-			if revoked && s.ExamStore != nil {
-				_ = s.ExamStore.RevokeTunnelTickets(r.Context(), session.ID)
-			}
-			if s.ExamStore != nil {
-				_ = s.ExamStore.SaveSession(r.Context(), session)
+			state, lastSeen, heartbeat, maxIdle, err := s.refreshSession(r.Context(), session, true)
+			if err != nil {
+				s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session_state_unavailable"})
+				return
 			}
 			s.writeJSON(w, http.StatusOK, map[string]any{"session_id": session.ID, "state": state, "last_seen_at": lastSeen, "heartbeat_seconds": heartbeat, "max_idle_seconds": maxIdle})
 			return
@@ -1922,7 +1917,10 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		session = s.findByToken(tokenFromRequest(r))
 	}
-	if session == nil || session.ExamID != examID || session.State != "active" {
+	s.mu.RLock()
+	active := session != nil && session.ExamID == examID && session.State == "active"
+	s.mu.RUnlock()
+	if !active {
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "active_session_required"})
 		return
 	}
@@ -1931,7 +1929,7 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.enforceIdleTimeout(session) {
-		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "session_suspended"})
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "session_inactive"})
 		return
 	}
 	requestPath := path.Clean("/" + examID + "/" + resource)
@@ -1943,9 +1941,11 @@ func (s *Service) proxy(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "path_not_allowed"})
 		return
 	}
-	s.mu.Lock()
-	session.LastSeenAt = time.Now().Unix()
-	s.mu.Unlock()
+	state, _, _, _, err := s.refreshSession(r.Context(), session, true)
+	if err != nil || state != "active" {
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "session_inactive"})
+		return
+	}
 	upstream, upstreamErr := s.upstreamForExam(r.Context(), examID)
 	if upstreamErr != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": "exam_configuration_unavailable"})

@@ -607,7 +607,7 @@ func TestProxyRejectsPathOutsidePolicy(t *testing.T) {
 
 func TestProxyEnforcesIdleTimeout(t *testing.T) {
 	service, _ := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
-	service.PolicyOverrides = map[string]map[string]any{"course-101": {"session": map[string]any{"max_idle_seconds": 5}}}
+	service.PolicyOverrides = map[string]map[string]any{"course-101": {"session": map[string]any{"heartbeat_seconds": 5, "max_idle_seconds": 5}}}
 	create := httptest.NewRecorder()
 	service.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"exam_id":"course-101"}`)))
 	var response map[string]string
@@ -625,8 +625,8 @@ func TestProxyEnforcesIdleTimeout(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+response["browser_token"])
 	result := httptest.NewRecorder()
 	service.ServeHTTP(result, request)
-	if result.Code != http.StatusForbidden || !strings.Contains(result.Body.String(), "session_suspended") {
-		t.Fatalf("idle session was not suspended: %d %s", result.Code, result.Body.String())
+	if result.Code != http.StatusForbidden || !strings.Contains(result.Body.String(), "session_inactive") {
+		t.Fatalf("idle session was not ended: %d %s", result.Code, result.Body.String())
 	}
 }
 

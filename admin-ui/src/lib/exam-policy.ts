@@ -23,7 +23,7 @@ export const networkFields: PolicyField[] = [
 
 export const sessionFields: PolicyField[] = [
   { path: "session.heartbeat_seconds", label: "心跳间隔（秒）", kind: "integer", fallback: 15, min: 5, max: 300, description: "考试入口页发送心跳的间隔，范围 5–300 秒；源站打开后，活跃 tunnel 也会维持心跳。" },
-  { path: "session.max_idle_seconds", label: "最大空闲时间（秒）", kind: "integer", fallback: 45, min: 5, max: 3600, description: "无心跳时触发暂停，范围 5–3600 秒，不能小于心跳间隔。这不是 EdgeOne 或代理连接超时。" },
+  { path: "session.max_idle_seconds", label: "无心跳自动结束（秒）", kind: "integer", fallback: 300, min: 5, max: 3600, description: "默认 300 秒（5 分钟）；超过此时长未更新心跳，后端自动结束 Session 并撤销代理凭证，不计为交卷。范围 5–3600 秒，不能小于心跳间隔；后台每 10 秒检查一次。这不是 EdgeOne 或代理连接超时。" },
 ];
 
 // These names are part of the signed document but are not wired into the

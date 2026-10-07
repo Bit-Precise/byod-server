@@ -67,6 +67,26 @@ test("new exam keeps inherited defaults and does not implicitly tunnel its sourc
   expect(saved[0].policy).toEqual({});
 });
 
+test("configurable session expiry uses 300 seconds by default and saves a custom deadline", async ({ page }) => {
+  const { saved } = await mockAPI(page, {});
+  await page.goto(`/admin/exams/${examID}/edit`);
+  await page.getByText("会话与心跳", { exact: true }).click();
+  const timeout = page.getByLabel("无心跳自动结束（秒）", { exact: true });
+  await expect(timeout).toHaveAttribute("placeholder", "继承（内置 300）");
+  await expect(page.getByText(/默认 300 秒（5 分钟）/)).toBeVisible();
+  await timeout.fill("600");
+  await page.getByRole("button", { name: "保存考试", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(1);
+  expect(saved[0].policy.session.max_idle_seconds).toBe(600);
+  await page.goto(`/admin/exams/${examID}/edit`);
+  await page.getByText("会话与心跳", { exact: true }).click();
+  await expect(timeout).toHaveValue("600");
+  await page.getByRole("button", { name: "无心跳自动结束（秒）：继承服务端配置", exact: true }).click();
+  await page.getByRole("button", { name: "保存考试", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(2);
+  expect(saved[1].policy.session?.max_idle_seconds).toBeUndefined();
+});
+
 test("rejects invalid hosts, origin paths and inconsistent heartbeat values without sending a save", async ({ page }) => {
   const { saved } = await mockAPI(page);
   await page.goto(`/admin/exams/${examID}/edit`);
@@ -74,14 +94,14 @@ test("rejects invalid hosts, origin paths and inconsistent heartbeat values with
   await page.getByRole("textbox", { name: "Tunnel hosts 1", exact: true }).fill("https://cs101.gbu.edu.cn");
   await page.getByText("会话与心跳", { exact: true }).click();
   await page.getByLabel("心跳间隔（秒）", { exact: true }).fill("60");
-  await page.getByLabel("最大空闲时间（秒）", { exact: true }).fill("45");
+  await page.getByLabel("无心跳自动结束（秒）", { exact: true }).fill("45");
   await page.getByRole("button", { name: "保存考试", exact: true }).click();
   await expect(page.getByText("请修正浏览器策略中标出的配置项后再保存。")).toBeVisible();
   await expect(page.getByText("最大空闲时间不能小于心跳间隔。", { exact: true })).toBeVisible();
   expect(saved).toEqual([]);
   await page.getByRole("textbox", { name: "额外允许访问的网站 1", exact: true }).fill("https://iaaa.gbu.edu.cn");
   await page.getByRole("textbox", { name: "Tunnel hosts 1", exact: true }).fill("cs101.gbu.edu.cn");
-  await page.getByLabel("最大空闲时间（秒）", { exact: true }).fill("120");
+  await page.getByLabel("无心跳自动结束（秒）", { exact: true }).fill("120");
   await page.getByRole("button", { name: "保存考试", exact: true }).click();
   await expect.poll(() => saved.length).toBe(1);
   expect(saved[0].policy.session).toEqual({ heartbeat_seconds: 60, max_idle_seconds: 120 });

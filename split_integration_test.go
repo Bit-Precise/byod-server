@@ -88,7 +88,7 @@ func TestPostgresSplitLivenessAndControlRestart(t *testing.T) {
 	if err != nil || stored.LastSeenAt.Unix() < f.session.LastSeenAt {
 		t.Fatalf("heartbeat regressed: %v", err)
 	}
-	if changed, err := f.control.ExamStore.SuspendIdleSession(ctx, f.session.ID, time.Now().Unix()-45); err != nil || changed {
+	if events, err := f.control.ExamStore.EndIdleSessions(ctx, f.session.ExamID, f.session.ID, time.Now(), 300); err != nil || len(events) != 0 {
 		t.Fatalf("fresh heartbeat lost idle race: %v", err)
 	}
 	// A new control process restores the durable session; stopping the old
@@ -111,7 +111,7 @@ func TestPostgresSplitLivenessAndControlRestart(t *testing.T) {
 }
 
 func TestPostgresSplitRevokesEstablishedStreams(t *testing.T) {
-	for _, reason := range []string{"credential", "suspend", "policy", "roster", "expiry", "window", "completion", "database"} {
+	for _, reason := range []string{"credential", "suspend", "policy", "roster", "expiry", "window", "completion", "database", "session_timeout"} {
 		t.Run(reason, func(t *testing.T) {
 			f := newSplitFixture(t)
 			ctx := context.Background()
@@ -163,6 +163,8 @@ func TestPostgresSplitRevokesEstablishedStreams(t *testing.T) {
 				_, err = store.db.ExecContext(ctx, `UPDATE byod_exams SET ends_at=now()-interval '1 second' WHERE exam_id=$1`, f.session.ExamID)
 			case "completion":
 				_, err = store.RecordCompletion(ctx, f.session.ExamID, f.session.Subject, f.session.ID, time.Now())
+			case "session_timeout":
+				_, err = store.EndIdleSessions(ctx, f.session.ExamID, f.session.ID, time.Now().Add(301*time.Second), 300)
 			case "database":
 				f.data.ExamStore.Close()
 			}

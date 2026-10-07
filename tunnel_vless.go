@@ -79,7 +79,11 @@ func (s *Service) lookupVLESSCredential(ctx context.Context, credential string) 
 		}
 		info = TunnelTicketInfo{SessionID: x.SessionID, ExamID: x.ExamID, EndpointID: x.EndpointID, ExpiresAt: x.ExpiresAt}
 		// No local session map is consulted or populated in the data plane.
-		active, err := s.ExamStore.TouchActiveSession(ctx, info.SessionID, time.Now().Unix())
+		_, maxIdle, err := s.sessionLimitsContext(ctx, info.ExamID)
+		if err != nil {
+			return TunnelTicketInfo{}, err
+		}
+		active, err := s.ExamStore.TouchActiveSession(ctx, info.SessionID, time.Now().Unix(), maxIdle)
 		if err != nil {
 			return TunnelTicketInfo{}, err
 		}

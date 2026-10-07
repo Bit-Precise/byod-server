@@ -89,6 +89,15 @@ XHTTP session 的所有请求落到同一实例，TCP 连接级粘性不足以�
 两者共用 PostgreSQL，数据面每 2 秒重新检查凭证、会话、名单、考试时间及目标白名单。
 数据库出错时关闭连接；心跳只更新 active 会话的时间，不推进考试状态机。
 控制面的 idle 判断读取持久化心跳并原子检查过期条件，旧快照不能覆盖新心跳。
+控制面启动时及每 10 秒扫描全部未结束 Session（含历史数据库记录）。无心跳超过
+`session.max_idle_seconds` 后自动置为 `ended`，同一事务撤销凭证并记录
+`session_expired` 事件；默认 300 秒（5 分钟），可在管理后台的“浏览器策略 →
+会话与心跳 → 无心跳自动结束（秒）”中按考试设置 5–3600 秒，不能小于心跳间隔。
+旧考试显式设置的值保持不变，恢复继承配置后使用服务端默认值。
+这只结束该 Session，不写入学生交卷记录；考试仍开放且学生未交卷时可以建立新
+Session。旧 Session 不可被迟到心跳、代理重连或管理员恢复操作重新激活。
+正常存活的 XHTTP 流仍每 2 秒更新持久化心跳，即使暂时没有业务数据也不会超时。
+此超时规则不代表实时连接数；`active` 在断线到超时之间仍可能存在。
 控制面重启不会关闭数据面的流。两个 Deployment 暂时均为单副本、Recreate；
 数据面升级会中断已有连接，扩容及无损滚动升级需另行实现 transport UUID 路由。
 
@@ -178,7 +187,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | GET | `/oidc/callback` | OIDC 回调；服务端交换 code，不把 IdP token 返回浏览器 |
 | GET | `/v1/sessions/{id}` | 查询认证和策略状态 |
 | POST | `/v1/sessions/{id}/start` | 原子地激活考试会话 |
-| POST | `/v1/sessions/{id}/heartbeat` | 更新浏览器存活时间；超过 45 秒未心跳会自动暂停 |
+| POST | `/v1/sessions/{id}/heartbeat` | 更新浏览器存活时间；无心跳超过配置时长（默认 300 秒）自动结束 Session，不计为交卷 |
 | POST | `/v1/sessions/{id}/end` | 撤销会话，考试结束后解锁 |
 | POST | `/v1/exams/{exam_id}/complete` | 正式交卷；写入完成记录并禁止同一学生再次进入 |
 | POST | `/v1/sessions/{id}/violations` | 上报切后台、DevTools 等违规；严重违规会将会话置为 `suspended` |

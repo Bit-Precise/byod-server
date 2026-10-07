@@ -105,12 +105,19 @@ func main() {
 		}
 		service.OIDC = authenticator
 	}
+	// Run on startup as well as periodically: old durable sessions must expire
+	// even when their browser never sends another request after disconnecting.
+	expiryContext, stopExpiry := context.WithCancel(context.Background())
+	expiryDone := make(chan struct{})
+	go func() { defer close(expiryDone); service.RunSessionExpiry(expiryContext) }()
+	defer func() { stopExpiry(); <-expiryDone }()
 	server := &http.Server{Addr: *listen, Handler: service, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
+		stopExpiry()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		service.CloseTunnels()

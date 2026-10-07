@@ -43,6 +43,19 @@ func hashTunnelTicket(ticket string) string {
 // remains valid for the exam window while every lookup still requires that
 // the session is active.
 func (s *Service) IssueTunnelTicket(ctx context.Context, sessionID string) (string, TunnelTicketInfo, error) {
+	s.mu.RLock()
+	current := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if current == nil {
+		return "", TunnelTicketInfo{}, errTunnelDenied
+	}
+	state, _, _, _, err := s.refreshSession(ctx, current, false)
+	if err != nil {
+		return "", TunnelTicketInfo{}, err
+	}
+	if state != "active" {
+		return "", TunnelTicketInfo{}, errTunnelDenied
+	}
 	now := time.Now()
 	s.mu.RLock()
 	session := s.sessions[sessionID]
@@ -143,10 +156,11 @@ func (s *Service) tunnelSessionActive(sessionID string) bool {
 	// The source page replaces the grips:// bootstrap document, so its
 	// JavaScript heartbeat timer no longer exists. An authenticated tunnel is
 	// itself the liveness signal: refresh last_seen_at while the stream is
-	// alive, otherwise the regular max-idle suspension still applies.
+	// alive, otherwise the configured idle deadline ends the session.
 	now := time.Now().Unix()
+	_, maxIdle := s.sessionLimits(examID)
 	s.mu.Lock()
-	if live := s.sessions[sessionID]; live == nil || live.State != "active" {
+	if live := s.sessions[sessionID]; live == nil || live.State != "active" || now-live.LastSeenAt > maxIdle {
 		s.mu.Unlock()
 		return false
 	} else {

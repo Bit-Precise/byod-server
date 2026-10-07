@@ -433,6 +433,10 @@ function showReady(target: URL, config: ExamConfig, sessionID: string) {
       }
       if (!response.ok) throw new Error('heartbeat rejected');
       const state = await response.json();
+      if (state.state === 'ended') {
+        returnToEntry('This session has ended. Sign in again to view available exams.');
+        return;
+      }
       if (state.state === 'suspended') {
         showInvalidLink('The exam session was suspended. Contact the proctor.');
       }
@@ -568,6 +572,10 @@ async function bootstrap(target: URL) {
   }
   if (!stateResponse.ok) throw new Error('exam session lookup failed');
   const state = await stateResponse.json();
+  if (state.state === 'ended') {
+    returnToEntry('The previous session has ended. Sign in again to view available exams.');
+    return;
+  }
   if (state.state === 'active') {
     await activateTunnel(config, existingSession, existingToken);
     showReady(target, config, existingSession);
