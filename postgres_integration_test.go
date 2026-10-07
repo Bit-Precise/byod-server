@@ -43,19 +43,32 @@ func TestPostgresExamLifecycle(t *testing.T) {
 	}
 	service.DevAuth = true
 	service.ExamStore = store
+	// The current browser flow logs in before creating an exam session.
+	// Seed the durable login cookie instead of the removed code-entry flow.
+	user, err := store.ResolveIdentity(ctx, OIDCIdentity{Issuer: service.identityIssuer(), Subject: "oidc:student-42", Name: "Student"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetParticipant(ctx, examID, user.ID, true, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	login := randomToken(32)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO byod_user_sessions(token_hash,user_id,expires_at)VALUES($1,$2,now()+interval '1 hour')`, digestToken(login), user.ID); err != nil {
+		t.Fatal(err)
+	}
+	createRequest := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"exam_id":"integration-lifecycle"}`))
+		r.AddCookie(&http.Cookie{Name: service.loginCookieName(), Value: login})
+		return r
+	}
 	create := httptest.NewRecorder()
-	service.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"exam_id":"integration-lifecycle","exam_code":"ABC12345"}`)))
+	service.ServeHTTP(create, createRequest())
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", create.Code, create.Body.String())
 	}
 	var session map[string]string
 	if err := json.Unmarshal(create.Body.Bytes(), &session); err != nil {
 		t.Fatal(err)
-	}
-	callback := httptest.NewRecorder()
-	service.ServeHTTP(callback, httptest.NewRequest(http.MethodGet, "/oidc/callback?state="+session["session_id"]+"&code=student-42", nil))
-	if callback.Code != http.StatusOK {
-		t.Fatalf("callback: %d %s", callback.Code, callback.Body.String())
 	}
 	start := httptest.NewRecorder()
 	startRequest := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session["session_id"]+"/start", nil)
@@ -87,12 +100,8 @@ func TestPostgresExamLifecycle(t *testing.T) {
 		t.Fatalf("complete: %d %s", complete.Code, complete.Body.String())
 	}
 	second := httptest.NewRecorder()
-	service.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"exam_id":"integration-lifecycle","exam_code":"ABC12345"}`)))
-	var secondSession map[string]string
-	_ = json.Unmarshal(second.Body.Bytes(), &secondSession)
-	secondCallback := httptest.NewRecorder()
-	service.ServeHTTP(secondCallback, httptest.NewRequest(http.MethodGet, "/oidc/callback?state="+secondSession["session_id"]+"&code=student-42", nil))
-	if secondCallback.Code != http.StatusGone {
-		t.Fatalf("completed student re-entered: %d %s", secondCallback.Code, secondCallback.Body.String())
+	service.ServeHTTP(second, createRequest())
+	if second.Code != http.StatusGone {
+		t.Fatalf("completed student re-entered: %d %s", second.Code, second.Body.String())
 	}
 }

@@ -93,25 +93,17 @@ function sourcePage(config) {
 }
 function endpointAddress(config) {
     const value = config.tunnel?.endpoint;
-    if (!value)
-        throw new Error('exam tunnel endpoint is missing');
-    const endpoint = new URL(value.includes('://') ? value : `http://${value}`);
-    const port = Number(endpoint.port || 8788);
-    if (!endpoint.hostname || !Number.isInteger(port) || port < 1 || port > 65535)
+    if (!value || config.tunnel?.protocol !== 'vless' ||
+        config.tunnel.transport !== 'xhttp' || config.tunnel.mode !== 'packet-up' ||
+        config.tunnel.encryption !== 'none')
+        throw new Error('exam VLESS/XHTTP configuration is invalid');
+    const endpoint = new URL(value);
+    const port = Number(endpoint.port || 443);
+    if (endpoint.protocol !== 'https:' || endpoint.host !== new URL(serviceOrigin).host ||
+        endpoint.pathname !== '/v1/xhttp/' || endpoint.username || endpoint.password ||
+        endpoint.search || endpoint.hash || !Number.isInteger(port) || port < 1 || port > 65535)
         throw new Error('exam tunnel endpoint is invalid');
     return { host: endpoint.hostname, port };
-}
-function bytes(text) {
-    return new TextEncoder().encode(text);
-}
-async function tunnelProof(ticket, endpointID, nonce) {
-    const key = await crypto.subtle.importKey('raw', bytes(ticket), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const prefix = new Uint8Array(bytes('BYOD').length + 1 + bytes(endpointID).length + nonce.length);
-    prefix.set(bytes('BYOD'), 0);
-    prefix[4] = 1;
-    prefix.set(bytes(endpointID), 5);
-    prefix.set(nonce, 5 + bytes(endpointID).length);
-    return new Uint8Array(await crypto.subtle.sign('HMAC', key, prefix));
 }
 function allowedOrigins(config) {
     const document = config.policy.document || {};
@@ -132,11 +124,9 @@ async function activateTunnel(config, sessionID, token) {
     if (!response.ok)
         throw new Error(`exam tunnel ticket rejected (${response.status})`);
     const ticket = await response.json();
-    if (!ticket.ticket || !ticket.endpoint_id)
-        throw new Error('exam tunnel ticket is incomplete');
-    const nonce = new Uint8Array(16);
-    crypto.getRandomValues(nonce);
-    const proof = await tunnelProof(ticket.ticket, ticket.endpoint_id, nonce);
+    if (ticket.protocol !== 'vless' || !ticket.endpoint_id ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ticket.ticket || ''))
+        throw new Error('exam VLESS credential is invalid');
     const endpoint = endpointAddress(config);
     if (!sendNativeMessage('setByodTunnelConfig', [{
             sourceHost: config.exam.source_host || sourceOrigin(config).hostname,
@@ -145,8 +135,6 @@ async function activateTunnel(config, sessionID, token) {
             proxyPort: endpoint.port,
             endpointId: ticket.endpoint_id,
             ticket: ticket.ticket,
-            nonce: [...nonce],
-            proof: [...proof],
             allowedOrigins: allowedOrigins(config),
             // The source page replaces this grips:// document, so the browser-side
             // countdown cannot remain responsible for ending the exam. Pass the

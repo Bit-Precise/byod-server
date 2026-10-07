@@ -88,6 +88,11 @@ func OpenPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore,
 	if err != nil {
 		return nil, err
 	}
+	// Each role has its own bounded pool; long-lived tunnels do not consume
+	// one database connection per stream.
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	if err = db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -741,7 +746,7 @@ func (s *PostgresStore) SaveSession(ctx context.Context, x *Session) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count,browser_token_hash)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9,$10)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=EXCLUDED.last_seen_at,violation_count=EXCLUDED.violation_count,browser_token_hash=CASE WHEN length(EXCLUDED.browser_token_hash)>0 THEN EXCLUDED.browser_token_hash ELSE byod_sessions.browser_token_hash END`, x.ID, key, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount, tokenHash)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO byod_sessions(id,exam_id,attempt_id,browser_session_id,subject,state,created_at,last_seen_at,violation_count,browser_token_hash)VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8),$9,$10)ON CONFLICT(id)DO UPDATE SET subject=EXCLUDED.subject,state=CASE WHEN byod_sessions.state='ended' THEN 'ended' ELSE EXCLUDED.state END,last_seen_at=GREATEST(byod_sessions.last_seen_at,EXCLUDED.last_seen_at),violation_count=EXCLUDED.violation_count,browser_token_hash=CASE WHEN length(EXCLUDED.browser_token_hash)>0 THEN EXCLUDED.browser_token_hash ELSE byod_sessions.browser_token_hash END`, x.ID, key, x.AttemptID, x.BrowserSessionID, x.Subject, x.State, x.CreatedAt, x.LastSeenAt, x.ViolationCount, tokenHash)
 	return err
 }
 
@@ -787,37 +792,49 @@ func (s *PostgresStore) CreateTunnelTicket(ctx context.Context, hash []byte, ses
 	return err
 }
 
-func (s *PostgresStore) ConsumeTunnelTicket(ctx context.Context, hash []byte, endpointID string, now time.Time) (StoredTunnelTicket, bool, error) {
-	var result StoredTunnelTicket
-	err := s.db.QueryRowContext(ctx, `UPDATE byod_tunnel_tickets t SET used_at=$3 FROM byod_sessions s WHERE t.ticket_hash=$1 AND t.session_id=s.id AND t.endpoint_id=$2 AND t.used_at IS NULL AND t.expires_at>$3 AND s.state='active' RETURNING t.session_id,t.exam_id,t.endpoint_id,t.expires_at`, hash, endpointID, now).Scan(&result.SessionID, &result.ExamID, &result.EndpointID, &result.ExpiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return StoredTunnelTicket{}, false, nil
-	}
-	if err != nil {
-		return StoredTunnelTicket{}, false, err
-	}
-	return result, true, nil
-}
-
-// LookupTunnelTicket validates a ticket without consuming it. CONNECT clients
-// may open more than one source connection during an exam; validity remains
-// bounded by expiry and active-session state and is revoked when the session
-// ends.
-func (s *PostgresStore) LookupTunnelTicket(ctx context.Context, hash []byte, endpointID string, now time.Time) (StoredTunnelTicket, bool, error) {
-	var result StoredTunnelTicket
-	err := s.db.QueryRowContext(ctx, `SELECT t.session_id,t.exam_id,t.endpoint_id,t.expires_at FROM byod_tunnel_tickets t JOIN byod_sessions s ON t.session_id=s.id WHERE t.ticket_hash=$1 AND t.endpoint_id=$2 AND t.used_at IS NULL AND t.expires_at>$3 AND s.state='active'`, hash, endpointID, now).Scan(&result.SessionID, &result.ExamID, &result.EndpointID, &result.ExpiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return StoredTunnelTicket{}, false, nil
-	}
-	if err != nil {
-		return StoredTunnelTicket{}, false, err
-	}
-	return result, true, nil
-}
-
 func (s *PostgresStore) RevokeTunnelTickets(ctx context.Context, sessionID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE byod_tunnel_tickets SET used_at=now() WHERE session_id=$1 AND used_at IS NULL`, sessionID)
 	return err
+}
+
+func (s *PostgresStore) TouchActiveSession(ctx context.Context, sessionID string, now int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE byod_sessions SET last_seen_at=GREATEST(last_seen_at,to_timestamp($2)) WHERE id=$1 AND state='active'`, sessionID, now)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
+}
+
+// VLESS carries only a random credential UUID, never a user-selected exam ID.
+// The database binds it to the session and exam and enforces expiry/revocation.
+func (s *PostgresStore) LookupVLESSCredential(ctx context.Context, hash []byte, issuer string, now time.Time) (StoredTunnelTicket, bool, error) {
+	var result StoredTunnelTicket
+	// Shared durable authorization is independent of either process's cache.
+	// Checking times does not advance the control-plane state machine.
+	err := s.db.QueryRowContext(ctx, `SELECT t.session_id,t.exam_id,t.endpoint_id,t.expires_at
+FROM byod_tunnel_tickets t JOIN byod_sessions s ON t.session_id=s.id AND t.exam_id=s.exam_id
+JOIN byod_exams e ON e.exam_id=t.exam_id
+WHERE t.ticket_hash=$1 AND t.used_at IS NULL AND t.expires_at>$2 AND s.state='active'
+AND e.state IN ('scheduled','active') AND (e.starts_at IS NULL OR e.starts_at<=$2) AND (e.ends_at IS NULL OR e.ends_at>$2)
+AND EXISTS(SELECT 1 FROM byod_users u JOIN byod_exam_participants p ON p.user_id=u.id
+           WHERE u.issuer=$3 AND u.subject=s.subject AND u.enabled AND p.exam_id=s.exam_id AND p.enabled)
+AND NOT EXISTS(SELECT 1 FROM byod_exam_completions c WHERE c.exam_id=s.exam_id AND c.subject=s.subject)`, hash, now, issuer).Scan(&result.SessionID, &result.ExamID, &result.EndpointID, &result.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoredTunnelTicket{}, false, nil
+	}
+	return result, err == nil, err
+}
+
+// SuspendIdleSession serializes the control-plane idle decision with data-plane
+// liveness. Only control is allowed to transition session state.
+func (s *PostgresStore) SuspendIdleSession(ctx context.Context, id string, cutoff int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE byod_sessions SET state='suspended',violation_count=violation_count+1 WHERE id=$1 AND state='active' AND last_seen_at<to_timestamp($2)`, id, cutoff)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 func (s *PostgresStore) ListSessions(ctx context.Context, id string) ([]StoredSession, error) {
 	key, err := s.resolveExamID(ctx, id)

@@ -126,14 +126,8 @@ func TestPolicyOverrideRejectsInvalidTunnelHost(t *testing.T) {
 	}
 }
 
-func TestConfigurationSelectsPrivateTunnelEndpointByClientCIDR(t *testing.T) {
+func TestConfigurationUsesHTTPSOriginForTunnelRegardlessOfClientIP(t *testing.T) {
 	service, err := NewService("https://exam.cs.ac.cn", "http://127.0.0.1:9", []byte("test-secret"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.TunnelEndpoint = "58.240.113.36:10061"
-	service.TunnelPrivateEndpoint = "11.0.11.10:8443"
-	service.TunnelPrivateCIDRs, err = ParseTunnelCIDRs("11.0.0.0/16")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,13 +137,15 @@ func TestConfigurationSelectsPrivateTunnelEndpointByClientCIDR(t *testing.T) {
 		forwarded string
 		want      string
 	}{
-		{name: "private client", forwarded: "11.0.11.42, 10.0.0.1", want: "11.0.11.10:8443"},
-		{name: "public client", forwarded: "203.0.113.42, 10.0.0.1", want: "58.240.113.36:10061"},
-		{name: "missing forwarded header", forwarded: "", want: "58.240.113.36:10061"},
+		{name: "private client", forwarded: "11.0.11.42, 10.0.0.1", want: "https://exam.cs.ac.cn/v1/xhttp/"},
+		{name: "public client", forwarded: "203.0.113.42, 10.0.0.1", want: "https://exam.cs.ac.cn/v1/xhttp/"},
+		{name: "missing forwarded header", forwarded: "", want: "https://exam.cs.ac.cn/v1/xhttp/"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "/course-101/.well-known/byod-configuration", nil)
+			request.Host = "untrusted.example"
+			request.Header.Set("X-Forwarded-Host", "untrusted.example")
 			if test.forwarded != "" {
 				request.Header.Set("X-Forwarded-For", test.forwarded)
 			}
@@ -159,15 +155,6 @@ func TestConfigurationSelectsPrivateTunnelEndpointByClientCIDR(t *testing.T) {
 				t.Fatalf("tunnel endpoint = %v, want %q", got, test.want)
 			}
 		})
-	}
-}
-
-func TestParseTunnelCIDRs(t *testing.T) {
-	if got, err := ParseTunnelCIDRs("11.0.0.0/16, 10.0.0.0/8"); err != nil || len(got) != 2 {
-		t.Fatalf("ParseTunnelCIDRs valid input = %#v, %v", got, err)
-	}
-	if _, err := ParseTunnelCIDRs("11.0.0.0/16,not-a-cidr"); err == nil {
-		t.Fatal("ParseTunnelCIDRs accepted invalid input")
 	}
 }
 

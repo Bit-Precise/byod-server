@@ -1,0 +1,70 @@
+# XHTTP packet-up GET/POST pairs must reach the same process. Until we have
+# transport-UUID affinity, keep one replica, including during upgrades.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "byod-server.fullname" . }}-data
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ include "byod-server.fullname" . }}-data
+  template:
+    metadata:
+      labels:
+        app: {{ include "byod-server.fullname" . }}-data
+        byod-role: data
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: byod-data
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          args:
+            - --role=data
+            - --listen=:8787
+            - --exam-origin={{ .Values.examOrigin }}
+            - --policy-file={{ .Values.policyFile }}
+            {{- if .Values.devAuth }}
+            - --dev-auth
+            {{- end }}
+          env:
+            - name: BYOD_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: BYOD_LOG_FORMAT
+              value: {{ .Values.logging.format | default "json" | quote }}
+            - name: BYOD_LOG_LEVEL
+              value: {{ .Values.logging.level | default "info" | quote }}
+            {{- if .Values.database.existingSecret }}
+            - name: BYOD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8787
+          resources:
+            {{- toYaml .Values.dataResources | nindent 12 }}
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/byod/policy
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "byod-server.fullname" . }}-policy

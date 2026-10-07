@@ -6,7 +6,6 @@
 
 ```bash
 go run ./cmd/byod-server --listen 127.0.0.1:8787 \
-  --tunnel-listen 127.0.0.1:8788 \
   --exam-origin https://exam.cs.ac.cn \
   --upstream https://127.0.0.1:9000
 ```
@@ -16,7 +15,6 @@ go run ./cmd/byod-server --listen 127.0.0.1:8787 \
 
 ```bash
 go run ./cmd/byod-server --dev-auth --listen 127.0.0.1:8787 \
-  --tunnel-listen 127.0.0.1:8788 \
   --exam-origin https://exam.cs.ac.cn --upstream https://127.0.0.1:9000
 ```
 
@@ -54,8 +52,6 @@ helm upgrade --install byod helm/byod-server \
   --set image.tag=0.1.0 \
   --set examOrigin=https://exam.cs.ac.cn \
   --set upstream=http://exam-upstream:9000 \
-  --set tunnel.endpoint=exam-tunnel.cs.ac.cn:443 \
-  --set tunnel.service.enabled=true \
   --set policySecret.existingSecret=byod-secrets \
   --set oidc.existingSecret=byod-oidc
 ```
@@ -73,14 +69,46 @@ helm upgrade --install byod helm/byod-server \
 
 生产环境应使用已有 Secret、开启 TLS Ingress，并关闭 `devAuth`；chart 默认的
 策略密钥为空，未配置 Secret 的 Pod 会直接退出，避免意外使用公共开发密钥。考试、学生名单、session 和事件存储在 PostgreSQL 中；请设置 `database.existingSecret` 和 `admin.existingSecret`。`migration.enabled` 默认为 true，Deployment 会先运行同版本镜像的 `--migrate` init container，迁移成功后才启动主容器。管理后台位于 `/admin/`，使用 shadcn 风格的响应式控制台；前端 API 客户端由 `openapi.yaml` 自动生成。
-`tunnel.endpoint` 必须指向可直通 Pod 8788 的 TCP 地址；`tunnel.service` 仅创建
-LoadBalancer/NodePort，不做 TLS termination。若集群使用 Gateway API，请关闭该
-Service 并用 TCPRoute 暴露同一个 targetPort。
+数据面使用 **VLESS v0（encryption=none、flow 为空、TCP）over XHTTP packet-up over HTTPS**。
+XHTTP 路径固定为 `/v1/xhttp/`，与控制面共用现有 HTTPS 入口；内部使用独立
+Deployment/Service（各自监听 8787）。不再创建独立公网 TCP listener、LoadBalancer、
+NodePort，也不根据客户端 IP 下发地址。
+浏览器仅把 `tunnel_hosts` 中的 HTTPS 主机交给原生 XHTTP socket，其他请求保持正常路径。
 
-如果数据中心客户端不能访问公网 DNAT，可同时设置
-`tunnel.privateEndpoint` 和逗号分隔的 `tunnel.privateCIDRs`。服务端会根据
-`X-Forwarded-For` 的客户端地址，为匹配 CIDR 的配置请求下发内网 endpoint，其他
-客户端继续收到 `tunnel.endpoint`；浏览器协议不需要改变。
+Ingress 必须按路径前缀转发 GET `/v1/xhttp/{session}` 和 POST
+`/v1/xhttp/{session}/{sequence}`，关闭该路径的缓存、响应缓冲和短请求超时；
+CDN/Ingress 的流式响应和 idle timeout 需单独验证。保持单副本；扩容前必须让同一
+XHTTP session 的所有请求落到同一实例，TCP 连接级粘性不足以保证这一点。
+
+同一镜像支持 `--role=control|data|all`（`all` 为本地合并测试模式）。Helm 固定部署：
+
+- `byod-byod-server`：control，登录、考试管理、策略及凭证；拒绝 XHTTP 路径。
+- `byod-byod-server-data`：data，只暴露 XHTTP 和健康检查；不加载 OIDC discovery、
+  客户端密钥、管理员 token 或策略签名密钥。仅需要数据库、OIDC issuer 和 host 策略。
+
+两者共用 PostgreSQL，数据面每 2 秒重新检查凭证、会话、名单、考试时间及目标白名单。
+数据库出错时关闭连接；心跳只更新 active 会话的时间，不推进考试状态机。
+控制面的 idle 判断读取持久化心跳并原子检查过期条件，旧快照不能覆盖新心跳。
+控制面重启不会关闭数据面的流。两个 Deployment 暂时均为单副本、Recreate；
+数据面升级会中断已有连接，扩容及无损滚动升级需另行实现 transport UUID 路由。
+
+`tunnel-ticket` 返回密码学随机的临时 VLESS UUID，数据库只保存其哈希，绑定
+活跃考试会话及有效期。它不是用户 UUID、考试 UUID 或长期账户密码。服务端检查
+目标白名单，暂停/交卷/到期会关闭已有连接并拒绝新连接。外层 HTTPS 不可省略；
+Istio 只终止外层 TLS，源站 TLS 仍由 Chromium 校验并端到端保持。
+
+互通测试（不依赖测试环境以外的服务器）：
+
+```bash
+go test -race ./...
+BYOD_XRAY_BINARY=/path/to/xray go test -race -run XrayInterop -v .
+# 只针对隔离测试数据库；验证双进程鉴权/心跳/撤销，不要指向生产数据库：
+BYOD_TEST_DATABASE_URL='postgres://postgres@localhost:5432/byod_test?sslmode=disable' go test -race ./...
+```
+
+第二项会启动独立 Xray 客户端，用 `network=xhttp`、`mode=packet-up`、
+`encryption=none` 访问 BYOD inbound，并校验双层 TLS 和考试撤销。当前不支持
+stream-up、stream-one、UDP、Mux、Vision 或 XHTTP 的自定义 header/cookie 分片模式。
 
 ## GitHub Actions / GHCR
 
@@ -131,7 +159,7 @@ curl http://127.0.0.1:8787/course-101/.well-known/byod-configuration
 | POST | `/v1/exams/{exam_id}/complete` | 正式交卷；写入完成记录并禁止同一学生再次进入 |
 | POST | `/v1/sessions/{id}/violations` | 上报切后台、DevTools 等违规；严重违规会将会话置为 `suspended` |
 | GET | `/v1/sessions/{id}/events` | 读取本次作答的追加式事件审计记录 |
-| POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发考试窗口内有效的 tunnel ticket；HTTP CONNECT 在 TTL 内可复用，二进制 preface 单次使用；session suspend/end 会立即失效 |
+| POST | `/v1/sessions/{id}/tunnel-ticket` | 为 active session 签发考试窗口内有效的 tunnel ticket；随机 VLESS UUID 在 TTL 内可复用；session suspend/end 后失效 |
 | ANY | `/{exam_id}/{path}` | 旧 HTTP Bearer 代理（仅兼容联调，透明 tunnel 不使用） |
 
 管理员 API（均需 OIDC 管理员 session 和 CSRF token）：
@@ -164,5 +192,5 @@ Web 页面来源不会被允许调用会话接口。
 1. 浏览器打开 `grips://exam/`，在当前标签页跳转 Connect OIDC 完成登录。
 2. 浏览器用登录态读取 `/v1/exams/available`，只展示后台分配给该用户的考试（使用 UUID `id` 作为内部引用，同时展示考试名称和 `hashtag`）；学生不再输入考试码。
 3. 学生选择考试后，浏览器用 UUID `exam_id` 调用 `POST /v1/sessions` 创建已认证的作答 session。
-4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `tunnel_hosts` 列出的 HTTPS 请求通过 L4 tunnel 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
+4. 考试未开始时落地页倒计时等待；考试开始后必须点击确认按钮，浏览器才请求 `/start`，调用 tunnel-ticket API，并将 `tunnel_hosts` 列出的 HTTPS 请求通过 VLESS/XHTTP 转发，然后打开配置的完整页面 URL；服务端不会终止或修改源站 TLS。
 5. 退出链接对应 `GET /{exam_id}/end` 或 `POST /{exam_id}/complete`；服务端立即撤销代理凭证，浏览器清理本地限制状态。

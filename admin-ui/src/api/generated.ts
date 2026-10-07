@@ -783,12 +783,16 @@ export interface components {
             occurred_at: number;
         };
         TunnelTicket: {
+            /**
+             * Format: uuid
+             * @description Temporary VLESS credential; not the student or exam ID
+             */
             ticket: string;
             endpoint_id: string;
             /** Format: date-time */
             expires_at: string;
             /** @enum {string} */
-            protocol: "byod-tunnel-v1";
+            protocol: "vless";
         };
     };
     responses: never;

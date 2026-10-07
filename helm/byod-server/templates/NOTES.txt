@@ -2,5 +2,12 @@ BYOD server is deployed as {{ include "byod-server.fullname" . }}.
 Configure a TLS reverse proxy for the exam origin before enabling production OIDC.
 Set policySecret.existingSecret (or policySecret.value for local development)
 and oidc.existingSecret before starting a production release.
-For browser tunnel traffic, set tunnel.endpoint to the public TCP host:port and
-enable tunnel.service or provide an equivalent Gateway TCPRoute/L4 service.
+Browser tunnel traffic uses VLESS (encryption=none) over XHTTP packet-up on
+https://<exam-origin-host>/v1/xhttp/. Route the entire prefix, disable caching
+and response buffering, and allow long-lived streaming GET responses.
+Route /v1/xhttp to {{ include "byod-server.fullname" . }}-data; all other paths
+to {{ include "byod-server.fullname" . }}. Both Services use port {{ .Values.service.port }}.
+Control/data share PostgreSQL. Data does not load control-plane secrets.
+Both roles use one replica and Recreate; data upgrades interrupt open streams.
+Do not scale data until transport-session affinity has been implemented.
+No separate tunnel LoadBalancer, NodePort, TCPRoute or public port is needed.

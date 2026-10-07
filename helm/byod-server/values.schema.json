@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/schema#",
   "type": "object",
   "properties": {
-    "replicaCount": {"type": "integer", "minimum": 1},
+    "replicaCount": {"type": "integer", "enum": [1]},
     "image": {
       "type": "object",
       "required": ["repository", "tag"],
@@ -14,23 +14,7 @@
     "service": {
       "type": "object",
       "properties": {
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "tunnelPort": {"type": "integer", "minimum": 1, "maximum": 65535}
-      }
-    },
-    "tunnel": {
-      "type": "object",
-      "properties": {
-        "endpoint": {"type": "string"},
-        "service": {
-          "type": "object",
-          "properties": {
-            "enabled": {"type": "boolean"},
-            "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
-          }
-        }
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
       }
     },
     "ingress": {

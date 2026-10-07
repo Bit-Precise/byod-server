@@ -32,6 +32,17 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 12
+    env:
+      BYOD_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -41,14 +52,14 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Test and vet
         run: |
-          go test ./...
+          go test -race ./...
           go vet ./...
       - name: Lint chart
         run: helm lint helm/byod-server
 
   publish:
     if: github.event_name == 'push'
-    needs: validate
+    needs: [validate, admin-ui]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -4,6 +4,8 @@ metadata:
   name: {{ include "byod-server.fullname" . }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ include "byod-server.fullname" . }}
@@ -11,7 +13,9 @@ spec:
     metadata:
       labels:
         app: {{ include "byod-server.fullname" . }}
+        byod-role: control
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -46,17 +50,8 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
           args:
+            - --role=control
             - --listen=:8787
-            - --tunnel-listen=:8788
-            {{- if .Values.tunnel.endpoint }}
-            - --tunnel-endpoint={{ .Values.tunnel.endpoint }}
-            {{- end }}
-            {{- if .Values.tunnel.privateEndpoint }}
-            - --tunnel-private-endpoint={{ .Values.tunnel.privateEndpoint }}
-            {{- end }}
-            {{- if .Values.tunnel.privateCIDRs }}
-            - --tunnel-private-cidrs={{ .Values.tunnel.privateCIDRs }}
-            {{- end }}
             - --exam-origin={{ .Values.examOrigin }}
             - --upstream={{ .Values.upstream }}
             - --policy-file={{ .Values.policyFile }}
@@ -112,8 +107,8 @@ spec:
           ports:
             - name: http
               containerPort: 8787
-            - name: tunnel
-              containerPort: 8788
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: policy
               mountPath: /etc/byod/policy

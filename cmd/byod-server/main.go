@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,10 +18,7 @@ import (
 func main() {
 	configureLogging()
 	listen := flag.String("listen", "127.0.0.1:8787", "listen address")
-	tunnelListen := flag.String("tunnel-listen", "127.0.0.1:8788", "raw BYOD tunnel listen address; empty disables the data plane")
-	tunnelEndpoint := flag.String("tunnel-endpoint", os.Getenv("BYOD_TUNNEL_ENDPOINT"), "public BYOD tunnel host:port advertised to browsers")
-	tunnelPrivateEndpoint := flag.String("tunnel-private-endpoint", os.Getenv("BYOD_TUNNEL_PRIVATE_ENDPOINT"), "private BYOD tunnel host:port for configured client networks")
-	tunnelPrivateCIDRs := flag.String("tunnel-private-cidrs", os.Getenv("BYOD_TUNNEL_PRIVATE_CIDRS"), "comma-separated client CIDRs that receive the private tunnel endpoint")
+	role := flag.String("role", "all", "runtime role: control, data, or all (local testing)")
 	origin := flag.String("exam-origin", "https://exam.cs.ac.cn", "public exam origin")
 	upstream := flag.String("upstream", "http://127.0.0.1:9000", "fixed exam upstream")
 	databaseURL := flag.String("database-url", os.Getenv("BYOD_DATABASE_URL"), "PostgreSQL connection URL for exam metadata")
@@ -36,6 +32,9 @@ func main() {
 	policyFile := flag.String("policy-file", os.Getenv("BYOD_POLICY_FILE"), "JSON policy document or exam-id map")
 	migrate := flag.Bool("migrate", false, "apply PostgreSQL schema migrations and exit")
 	flag.Parse()
+	if *role != "control" && *role != "data" && *role != "all" {
+		log.Fatal("--role must be control, data, or all")
+	}
 	if *migrate {
 		if *databaseURL == "" {
 			log.Fatal("--migrate requires BYOD_DATABASE_URL or --database-url")
@@ -48,7 +47,10 @@ func main() {
 		return
 	}
 	secretValue := os.Getenv("BYOD_POLICY_SECRET")
-	if secretValue == "" && !*devAuth {
+	if *role == "data" && (*databaseURL == "" || (*oidcIssuer == "" && !*devAuth)) {
+		log.Fatal("--role=data requires a database and OIDC issuer (or --dev-auth)")
+	}
+	if secretValue == "" && !*devAuth && *role != "data" {
 		log.Fatal("BYOD_POLICY_SECRET is required unless --dev-auth is enabled")
 	}
 	secret := []byte(secretValue)
@@ -60,23 +62,22 @@ func main() {
 		log.Fatal(err)
 	}
 	service.DevAuth = *devAuth
-	if *tunnelEndpoint != "" {
-		service.TunnelEndpoint = *tunnelEndpoint
-	}
-	service.TunnelPrivateEndpoint = strings.TrimSpace(*tunnelPrivateEndpoint)
-	privateCIDRs, cidrErr := server.ParseTunnelCIDRs(*tunnelPrivateCIDRs)
-	if cidrErr != nil {
-		log.Fatal(cidrErr)
-	}
-	service.TunnelPrivateCIDRs = privateCIDRs
-	service.AdminToken = *adminToken
-	for _, email := range strings.Split(*adminEmails, ",") {
-		if normalized, err := server.NormalizeEmailForConfig(email); err == nil {
-			service.AdminEmails[normalized] = true
+	service.Role = *role
+	service.IdentityIssuer = *oidcIssuer
+	if *role == "data" {
+		service.PolicySecret = nil
+	} else {
+		service.AdminToken = *adminToken
+		for _, email := range strings.Split(*adminEmails, ",") {
+			if normalized, err := server.NormalizeEmailForConfig(email); err == nil {
+				service.AdminEmails[normalized] = true
+			}
 		}
 	}
 	if *databaseURL != "" {
-		store, storeErr := server.OpenPostgresStore(context.Background(), *databaseURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		store, storeErr := server.OpenPostgresStore(ctx, *databaseURL)
+		cancel()
 		if storeErr != nil {
 			log.Fatal(storeErr)
 		}
@@ -97,7 +98,7 @@ func main() {
 		}
 		service.PolicyOverrides = overrides
 	}
-	if *oidcIssuer != "" {
+	if *oidcIssuer != "" && *role != "data" {
 		authenticator, authErr := server.NewOIDCAuthenticator(context.Background(), *oidcIssuer, *oidcClientID, *oidcClientSecret, *oidcRedirect)
 		if authErr != nil {
 			log.Fatal(authErr)
@@ -106,41 +107,16 @@ func main() {
 	}
 	server := &http.Server{Addr: *listen, Handler: service, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
-	var tunnelListener net.Listener
-	if *tunnelListen != "" {
-		var listenErr error
-		tunnelListener, listenErr = net.Listen("tcp", *tunnelListen)
-		if listenErr != nil {
-			log.Fatal(listenErr)
-		}
-		log.Printf("BYOD tunnel listening on tcp://%s", *tunnelListen)
-		go func() {
-			for {
-				conn, acceptErr := tunnelListener.Accept()
-				if acceptErr != nil {
-					if ne, ok := acceptErr.(net.Error); ok && ne.Temporary() {
-						time.Sleep(50 * time.Millisecond)
-						continue
-					}
-					return
-				}
-				go service.ServeTunnel(context.Background(), conn)
-			}
-		}()
-	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if tunnelListener != nil {
-			_ = tunnelListener.Close()
-			tunnelListener = nil
-		}
+		service.CloseTunnels()
 		_ = server.Shutdown(ctx)
 	}()
-	log.Printf("BYOD server listening on http://%s", *listen)
+	log.Printf("BYOD %s listening on http://%s", *role, *listen)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Service) identityIssuer() string {
+	if s.IdentityIssuer != "" && !s.DevAuth {
+		return s.IdentityIssuer
+	}
 	if s.OIDC != nil && !s.DevAuth {
 		return s.OIDC.Issuer
 	}

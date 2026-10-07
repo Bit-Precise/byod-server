@@ -109,16 +109,12 @@ type ExamEvent struct {
 }
 
 type Service struct {
-	ExamOrigin string
-	Upstream   *url.URL
-	// TunnelEndpoint is the public host:port exposed by an L4 load balancer.
-	// It is intentionally separate from the HTTP control-plane origin.
-	TunnelEndpoint string
-	// TunnelPrivateEndpoint is an optional endpoint for clients in the
-	// configured private address ranges. The browser still receives one
-	// endpoint, selected when it fetches the exam configuration.
-	TunnelPrivateEndpoint string
-	TunnelPrivateCIDRs    []*net.IPNet
+	// Empty/all is the combined local-test role. Production uses control/data.
+	Role string
+	// Data-plane identity lookup needs the issuer, not OIDC discovery/secrets.
+	IdentityIssuer string
+	ExamOrigin     string
+	Upstream       *url.URL
 	// ExamUpstreams optionally overrides the default upstream per exam ID. The
 	// map is operator-provided configuration, never taken from a browser
 	// request, so exam routing cannot be turned into an open proxy.
@@ -138,6 +134,7 @@ type Service struct {
 	tunnelTickets   map[string]*tunnelTicket
 	browserLogins   map[string]*browserLoginState
 	completions     map[string]time.Time
+	xhttp           xhttpState
 }
 
 func (s *Service) upstreamForExam(ctx context.Context, examID string) (*url.URL, error) {
@@ -184,9 +181,8 @@ func NewService(examOrigin, upstream string, secret []byte) (*Service, error) {
 		return nil, errors.New("upstream must be an absolute HTTP(S) URL")
 	}
 	return &Service{ExamOrigin: strings.TrimRight(examOrigin, "/"), Upstream: base,
-		TunnelEndpoint: "127.0.0.1:8788",
-		ExamUpstreams:  make(map[string]*url.URL),
-		PolicySecret:   secret, OIDCAuthorize: "https://idp.example/authorize",
+		ExamUpstreams: make(map[string]*url.URL),
+		PolicySecret:  secret, OIDCAuthorize: "https://idp.example/authorize",
 		AdminEmails: make(map[string]bool),
 		sessions:    make(map[string]*Session), exams: make(map[string]*Exam), events: make(map[string][]ExamEvent),
 		tunnelTickets: make(map[string]*tunnelTicket), browserLogins: make(map[string]*browserLoginState), completions: make(map[string]time.Time)}, nil
@@ -259,7 +255,7 @@ func (s *Service) policy(examID string) map[string]any {
 			"url":         sourceURL,
 			"host":        sourceHost,
 			"endpoint_id": examID,
-			"transport":   "byod-tunnel-v1",
+			"transport":   "vless-xhttp",
 		},
 		// Keep the routing allowlist at the signed document top level so the
 		// browser can pass it to native code without deriving it from the
@@ -521,7 +517,7 @@ func (s *Service) configurationForRequest(examID string, request *http.Request) 
 	exam := map[string]any{"id": examID, "origin": s.ExamOrigin,
 		"proxy_origin": s.ExamOrigin, "unlock_path": "/" + examID + "/end",
 		"source_url": sourceURL, "source_origin": sourceOrigin, "source_host": sourceHost,
-		"endpoint_id": examID, "transport": "byod-tunnel-v1"}
+		"endpoint_id": examID, "transport": "vless-xhttp"}
 	if s.ExamStore != nil {
 		if stored, ok, err := s.ExamStore.GetExam(context.Background(), examID); err == nil && ok {
 			exam["name"] = stored.Name
@@ -533,8 +529,8 @@ func (s *Service) configurationForRequest(examID string, request *http.Request) 
 	}
 	return map[string]any{"version": 1,
 		"exam": exam,
-		"tunnel": map[string]any{"protocol": "byod-tunnel-v1", "endpoint_id": examID,
-			"endpoint":    s.tunnelEndpointForRequest(request),
+		"tunnel": map[string]any{"protocol": "vless", "transport": "xhttp", "mode": "packet-up", "encryption": "none", "endpoint_id": examID,
+			"endpoint":    s.xhttpEndpoint(),
 			"ticket_path": "/v1/sessions/{session_id}/tunnel-ticket"},
 		"oidc": map[string]any{"authorization_endpoint": authorizeEndpoint,
 			"callback_endpoint": "/oidc/callback", "client_id": clientID,
@@ -767,16 +763,42 @@ func (s *Service) enforceIdleTimeout(session *Session) bool {
 	if session == nil {
 		return false
 	}
+	var durable *StoredSession
 	if s.ExamStore != nil {
-		allowed, err := s.ExamStore.UserAccess(context.Background(), s.identityIssuer(), session.Subject, session.ExamID)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		var err error
+		durable, err = s.ExamStore.GetSession(ctx, session.ID)
+		if err != nil {
+			return false
+		}
+		allowed, err := s.ExamStore.UserAccess(ctx, s.identityIssuer(), session.Subject, session.ExamID)
 		if err != nil || !allowed {
 			return false
 		}
 	}
 	_, maxIdle := s.sessionLimits(session.ExamID)
 	s.mu.Lock()
+	if durable != nil && durable.State != "active" && durable.State != "authenticated" {
+		s.mu.Unlock()
+		return false
+	}
+	if durable != nil && durable.LastSeenAt.Unix() > session.LastSeenAt {
+		session.LastSeenAt = durable.LastSeenAt.Unix()
+	}
 	suspended := false
 	if session.State == "active" && time.Now().Unix()-session.LastSeenAt > maxIdle {
+		if s.ExamStore != nil {
+			// Atomically compete with data-plane heartbeat updates. A heartbeat
+			// arriving after our read must prevent the idle transition as well.
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			changed, err := s.ExamStore.SuspendIdleSession(ctx, session.ID, time.Now().Unix()-maxIdle)
+			cancel()
+			if err != nil || !changed {
+				s.mu.Unlock()
+				return err == nil
+			}
+		}
 		session.State = "suspended"
 		session.ViolationCount++
 		session.LastViolation = "heartbeat_timeout"
@@ -809,6 +831,18 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	response := &requestLogWriter{ResponseWriter: w, status: http.StatusOK}
 	defer logHTTPRequest(r, response, started)
 	w = response
+	if s.Role == "data" && r.URL.Path != "/healthz" && r.URL.Path != "/readyz" && !strings.HasPrefix(r.URL.Path, xhttpPath) {
+		http.NotFound(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, xhttpPath) {
+		if s.Role == "control" {
+			http.NotFound(w, r)
+			return
+		}
+		s.serveXHTTP(w, r)
+		return
+	}
 	// grips://exam is a trusted Chromium WebUI origin, but it is still
 	// cross-origin from the HTTPS exam endpoint.  Explicit CORS headers are
 	// therefore required for the browser-side session bootstrap.
@@ -893,7 +927,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-server", "oidc": s.OIDC != nil || s.DevAuth})
+		s.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "service": "byod-server", "role": s.Role, "oidc": s.OIDC != nil || s.DevAuth})
 		return
 	}
 	if r.URL.Path == "/browser/login" {
@@ -1794,7 +1828,7 @@ func (s *Service) post(w http.ResponseWriter, r *http.Request) {
 			}
 			s.writeJSON(w, http.StatusCreated, map[string]any{
 				"ticket": ticket, "endpoint_id": info.EndpointID,
-				"expires_at": info.ExpiresAt.UTC(), "protocol": "byod-tunnel-v1",
+				"expires_at": info.ExpiresAt.UTC(), "protocol": "vless",
 			})
 			return
 		}
@@ -1851,7 +1885,7 @@ func (s *Service) endWithReason(ctx context.Context, session *Session, reason st
 	}
 	s.appendEvent(session, "exam_completed", "info", details)
 	// All previously authenticated attempts for this student are terminal,
-	// not just the tab that submitted. Existing CONNECT streams are checked
+	// not just the tab that submitted. Existing VLESS streams are checked
 	// against these states and shut down by the tunnel monitor.
 	for _, other := range s.sessions {
 		if other.ID != session.ID && subject != "" && other.ExamID == session.ExamID && other.Subject == subject && other.State != "ended" {
